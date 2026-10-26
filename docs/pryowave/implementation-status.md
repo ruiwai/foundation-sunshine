@@ -144,3 +144,5 @@ SDR-transport-shrink/v1: deleted unused HDR/HLG publication branch/API; runtime 
 Portable build + CTest 2/2 passed; excludes Windows transport and the new loss/reordering test; new Windows validation pending.
 Prior Windows CI `40402894669` at `9420f8a`: full `sunshine.exe` link, 87 unit cases and 3/3 CTest passed.
 That prior run covers neither `81ae` unused SRVs nor this patch; no new Windows/runtime or performance claim.
+PyroWave teardown stays in owner scope instead of inheriting legacy asynchronous detachment.
+Driver-destroy blocking is not resolved; Windows compilation/runtime validation remains pending.

@@ -3533,8 +3533,9 @@ namespace video {
     // to restart encoding as soon as possible. For cases where the NVENC driver
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
-    auto fail_guard = util::fail_guard([&encoder, &session] {
-      if (encoder.flags & ASYNC_TEARDOWN) {
+    // PyroWave teardown stays in owner scope rather than inheriting legacy detachment.
+    auto fail_guard = util::fail_guard([&encoder, &session, &config] {
+      if (config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) && (encoder.flags & ASYNC_TEARDOWN)) {
         std::thread encoder_teardown_thread { [session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
           session.reset();
