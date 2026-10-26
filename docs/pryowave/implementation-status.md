@@ -120,9 +120,12 @@ Native `e68a75aebd2a1d185725852d294dc4cf33bef2df`: four unused shader requests r
 Native build/features 1/1 passed; roundtrip investigation waived/test not run; Windows/hardware pending; no speed claim.
 
 Borrow-only VDD shrink/v1 removes the VDD snapshot copy path and cursor compositing; transient backpressure returns timeout.
-Disabled borrowing or visible cursor without existing local-mode activation fails strictly; activation does not prove cursor delivery; global capture fallbacks remain.
+Visible cursor without existing local-mode activation fails strictly; activation does not prove cursor delivery; global capture fallbacks remain.
 Prior replacement Windows WARP/source-lease coverage at `d272d2e` is not a snapshot runtime pass.
 Windows build and end-to-end VDD/runtime cursor validation of this change remain pending.
 Fallback-chain shrink/v1: explicit VDD no longer retries DDX; PyroWave initialization no longer retries RAM capture.
 Other codec/capture selectors, generic initial capture policy and encoder-probe override remain unchanged.
 Windows compilation/runtime validation of this shrink remains pending.
+
+Mandatory-borrow cleanup/v1: VDD borrowing is mandatory; no environment/config switch remains.
+Runtime performance remains unmeasured; Windows compilation/runtime validation pending.

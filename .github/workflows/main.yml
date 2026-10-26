@@ -338,6 +338,7 @@ jobs:
         run: |
           if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
             ninja -C build pyrowave_unit_tests pyrowave_packetizer_probe pyrowave_native_features_test \
+              CMakeFiles/sunshine.dir/src/config.cpp.obj \
               CMakeFiles/sunshine.dir/src/video.cpp.obj \
               CMakeFiles/sunshine.dir/src/rtsp.cpp.obj \
               CMakeFiles/sunshine.dir/src/stream.cpp.obj \

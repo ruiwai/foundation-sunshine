@@ -37,7 +37,6 @@ namespace platf::dxgi {
 
     BOOST_LOG(debug) << "[vdd] borrowed texture stats: attempts="sv << vdd_borrow_attempts
                      << " successes="sv << vdd_borrow_successes
-                     << " disabled_frames="sv << vdd_borrow_disabled_frames
                      << " producer_frame="sv << dup.frame_counter()
                      << " slot="sv << dup.producer_slot_index() << "/"sv << dup.producer_slot_count()
                      << " dirty_rects="sv << dup.last_dirty_rect_count()
@@ -75,11 +74,6 @@ namespace platf::dxgi {
     if (cursor_visible && !use_local_cursor) {
       BOOST_LOG(error) << "[vdd] borrowed-only capture does not support cursor compositing; "sv
                          "use explicit cursor-hidden capture or already-enabled client-local cursor mode"sv;
-      return capture_e::error;
-    }
-    if (!vdd_borrow_enabled) {
-      ++vdd_borrow_disabled_frames;
-      BOOST_LOG(error) << "[vdd] borrowed-only capture requires vdd_borrowed_texture=true"sv;
       return capture_e::error;
     }
 
@@ -198,7 +192,7 @@ namespace platf::dxgi {
 
     auto try_borrow_current_frame = [&]() -> capture_e {
       ++vdd_borrow_attempts;
-      if (!vdd_borrow_enabled || (cursor_visible && !use_local_cursor)) {
+      if (cursor_visible && !use_local_cursor) {
         return capture_e::error;
       }
       if (!vdd_borrow_deferred_images.empty()) {
