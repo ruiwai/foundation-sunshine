@@ -84,4 +84,7 @@ Windows tests. Windows compilation of this gate is pending.
 Per-frame release verification/v1 checks D3D completion after each successful Vulkan
 CPU wait, before ring release; failures retain ring poisoning and the 1000 ms event wait.
 Portable coverage tests only the completion predicate; Windows compilation/runtime pending.
-Lifecycle is **not complete**: native packetization/context teardown still contains infinite fence/device-idle waits.
+Lifecycle is **not complete**: native `321909d` bounds five encoder readback APIs with a 1 s `wait_timeout`, failing before mapping on timeout.
+Helper fixture and native build/feature test (1/1) passed; context/device teardown and decoder waits remain unbounded.
+GPU-stall behavior and an end-to-end bound remain unverified.
+Windows run `40378882947` at `8377e82` predates the native pin and remains **PENDING**; it does not validate the new pin.
