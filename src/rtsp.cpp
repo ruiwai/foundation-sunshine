@@ -42,6 +42,7 @@ extern "C" {
 #include "network.h"
 #include "pyrowave/runtime.h"
 #include "pyrowave/packet.h"
+#include "pyrowave/signal_contract.h"
 #include "nvhttp.h"
 #include "rtsp.h"
 #include "stream.h"
@@ -1727,18 +1728,10 @@ namespace rtsp_stream {
         return;
       }
       if (pyrowave::is_experimental_video_format(static_cast<std::uint32_t>(monitor.videoFormat))) {
-        const auto is_bt709 = (monitor.encoderCscMode >> 1) == 1;
-        const auto is_bt2020 = (monitor.encoderCscMode >> 1) == 2;
-        const auto color_range = monitor.encoderCscMode & 0x1;
-        const auto is_full_range = color_range == 1;
-        const auto is_limited_range = color_range == 0;
-        const auto is_sdr = monitor.dynamicRange == 0;
-        const auto is_hdr10 = monitor.dynamicRange == 1;
-        const auto is_hlg = monitor.dynamicRange == 2;
-        if ((!is_sdr && !is_hdr10 && !is_hlg) || monitor.chromaSamplingType != 0 ||
-            (is_sdr && !is_bt709) || ((is_hdr10 || is_hlg) && !is_bt2020) ||
-            (!is_full_range && !is_limited_range)) {
-          BOOST_LOG(warning) << "Rejecting experimental PyroWave video format: SDR BT.709 or static HDR10/HLG BT.2020 4:2:0 with a valid color range is required"sv;
+        const auto is_full_range = (monitor.encoderCscMode & 0x1) != 0;
+        if (const auto reason = pyrowave::validate_sdr_signal(monitor.width, monitor.height,
+              monitor.dynamicRange, monitor.chromaSamplingType, monitor.encoderCscMode)) {
+          BOOST_LOG(warning) << "Rejecting experimental PyroWave video format: "sv << reason;
           respond(sock, session, &option, 415, "UNSUPPORTED MEDIA TYPE", req->sequenceNumber, {});
           return;
         }

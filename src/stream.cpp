@@ -64,6 +64,7 @@ extern "C" {
 #include "clipboard_bridge.h"
 #include "cursor_channel.h"
 #include "platform/common.h"
+#include "pyrowave/video_admission.h"
 #include "touch_keyboard_session.h"
 #include "text_context/bridge.h"
 
@@ -702,94 +703,43 @@ namespace stream {
   };
 
   namespace session {
-    // 高位表示显示设备正在重配置，低 31 位记录已登记的视频会话数。
-    // 两者共用一个原子状态，确保“确认单会话”和“取得重配置权”由同一次 CAS 完成。
-    constexpr std::uint32_t VIDEO_SESSION_RECONFIGURING = std::uint32_t {1} << 31;
-    constexpr std::uint32_t VIDEO_SESSION_COUNT_MASK = ~VIDEO_SESSION_RECONFIGURING;
-
     std::atomic_uint running_sessions;
-    boost::atomic<std::uint32_t> video_session_state {0};
+    pyrowave::video_admission_t video_admission;
 
-    // 在创建音视频线程前登记会话。显示设备重配置期间，新会话在此等待占用位释放，
-    // 避免会话启动和 VDD 重建同时进行。返回值表示它是否是首个视频会话。
+    // Reserve before creating audio/video threads; reject busy admission without waiting.
     std::optional<bool>
     register_video_session() {
-      auto state = video_session_state.load(boost::memory_order_acquire);
-      for (;;) {
-        if ((state & VIDEO_SESSION_RECONFIGURING) != 0) {
-          state = video_session_state.wait(state, boost::memory_order_acquire);
-          continue;
-        }
-
-        const auto count = state & VIDEO_SESSION_COUNT_MASK;
-        if (count == VIDEO_SESSION_COUNT_MASK) {
-          BOOST_LOG(error) << "Cannot register another video session because the session counter is exhausted"sv;
-          return std::nullopt;
-        }
-
-        if (video_session_state.compare_exchange_weak(
-              state,
-              state + 1,
-              boost::memory_order_acq_rel,
-              boost::memory_order_acquire)) {
-          return count == 0;
-        }
+      if (!video_admission.try_acquire()) {
+        BOOST_LOG(error) << "Cannot register another video session because video admission is busy"sv;
+        return std::nullopt;
       }
+      return true;
     }
 
-    // 只递减低位的会话计数，保留可能并发存在的重配置占用位。
-    // 返回注销后的会话数，由最后一个会话负责执行平台停止和显示恢复逻辑。
+    // Release the active session without clearing an in-progress reconfiguration.
     std::uint32_t
     unregister_video_session() {
-      auto state = video_session_state.load(boost::memory_order_acquire);
-      for (;;) {
-        const auto count = state & VIDEO_SESSION_COUNT_MASK;
-        if (count == 0) {
-          BOOST_LOG(error) << "Cannot unregister a video session because the session counter is already zero"sv;
-          return 0;
-        }
-
-        const auto desired = (state & VIDEO_SESSION_RECONFIGURING) | (count - 1);
-        if (video_session_state.compare_exchange_weak(
-              state,
-              desired,
-              boost::memory_order_acq_rel,
-              boost::memory_order_acquire)) {
-          return count - 1;
-        }
+      if (!video_admission.release()) {
+        BOOST_LOG(error) << "Cannot unregister a video session because the session counter is already zero"sv;
       }
+      return 0;
     }
 
     std::uint32_t
     video_session_count() {
-      return video_session_state.load(boost::memory_order_acquire) & VIDEO_SESSION_COUNT_MASK;
+      return video_admission.active() ? 1 : 0;
     }
 
     template <class F>
     bool
     run_display_reconfiguration_if_single_video_session(F &&operation) {
-      // 只有恰好一个视频会话时才允许重配置。CAS 成功设置占用位后，
-      // 后续视频会话会在 register_video_session() 中等待，不会进入重建窗口。
-      auto state = video_session_state.load(boost::memory_order_acquire);
-      for (;;) {
-        if ((state & VIDEO_SESSION_RECONFIGURING) != 0 ||
-            (state & VIDEO_SESSION_COUNT_MASK) != 1) {
-          return false;
-        }
-
-        if (video_session_state.compare_exchange_weak(
-              state,
-              state | VIDEO_SESSION_RECONFIGURING,
-              boost::memory_order_acq_rel,
-              boost::memory_order_acquire)) {
-          break;
-        }
+      if (!video_admission.try_begin_reconfiguration()) {
+        return false;
       }
 
-      // 无论重配置正常返回还是抛出异常，都必须清除占用位并唤醒等待的新会话。
+      // Clear the reconfiguration bit on return or exception, preserving active admission.
       auto reconfiguration_guard = util::fail_guard([]() {
-        video_session_state.fetch_and(VIDEO_SESSION_COUNT_MASK, boost::memory_order_release);
-        video_session_state.notify_all();
+        video_admission.end_reconfiguration();
       });
       std::forward<F>(operation)();
       return true;

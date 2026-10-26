@@ -10,7 +10,9 @@
 #include "src/pyrowave/packet.h"
 #include "src/pyrowave/packetizer.h"
 #include "src/pyrowave/session.h"
+#include "src/pyrowave/signal_contract.h"
 #include "src/pyrowave/types.h"
+#include "src/pyrowave/video_admission.h"
 #include "src/pyrowave/runtime.h"
 #include "src/pyrowave/dynamic_hdr.h"
 #include "third-party/moonlight-common-c/tests/PyrowaveDynamicHdrFixtures.h"
@@ -29,11 +31,13 @@ extern "C" {
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <iterator>
 #include <limits>
 #include <memory>
 #include <new>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -150,6 +154,122 @@ TEST(PyrowaveConfigTest, RejectsMissingApiVersion) {
   auto config = enabled_config();
   config.expected_api_version = {};
   EXPECT_FALSE(pyrowave::validate(config));
+}
+
+TEST(PyrowaveVideoAdmissionTest, RejectsSecondAndReacquiresAfterFailedStart) {
+  pyrowave::video_admission_t gate;
+  EXPECT_FALSE(gate.active());
+  EXPECT_FALSE(gate.release());
+  ASSERT_TRUE(gate.try_acquire());
+  EXPECT_TRUE(gate.active());
+  EXPECT_FALSE(gate.try_acquire());
+  EXPECT_TRUE(gate.release());  // Failed-start guard releases the reservation.
+  EXPECT_FALSE(gate.active());
+  ASSERT_TRUE(gate.try_acquire());
+  EXPECT_TRUE(gate.release());  // Normal join releases the next session.
+  EXPECT_FALSE(gate.release());
+}
+
+TEST(PyrowaveVideoAdmissionTest, ReconfigurationRequiresActiveAndPreservesIt) {
+  pyrowave::video_admission_t gate;
+  EXPECT_FALSE(gate.try_begin_reconfiguration());
+  ASSERT_TRUE(gate.try_acquire());
+  ASSERT_TRUE(gate.try_begin_reconfiguration());
+  EXPECT_FALSE(gate.try_begin_reconfiguration());
+  EXPECT_FALSE(gate.try_acquire());
+  gate.end_reconfiguration();
+  EXPECT_TRUE(gate.active());
+  EXPECT_FALSE(gate.try_acquire());
+  EXPECT_TRUE(gate.release());
+  EXPECT_TRUE(gate.try_acquire());
+}
+
+TEST(PyrowaveVideoAdmissionTest, ReleaseDuringReconfigurationKeepsAdmissionClosed) {
+  pyrowave::video_admission_t gate;
+  ASSERT_TRUE(gate.try_acquire());
+  ASSERT_TRUE(gate.try_begin_reconfiguration());
+  EXPECT_TRUE(gate.release());
+  EXPECT_FALSE(gate.active());
+  EXPECT_FALSE(gate.release());
+  EXPECT_FALSE(gate.try_acquire());
+  EXPECT_FALSE(gate.try_begin_reconfiguration());
+  gate.end_reconfiguration();
+  EXPECT_FALSE(gate.active());
+  EXPECT_TRUE(gate.try_acquire());
+}
+
+TEST(PyrowaveVideoAdmissionTest, ConcurrentContendersHaveExactlyOneWinner) {
+  pyrowave::video_admission_t gate;
+  constexpr unsigned contenders = 16;
+  std::atomic<bool> start {false};
+  std::atomic<unsigned> attempts {0}, winners {0};
+  std::vector<std::thread> threads;
+  for (unsigned i = 0; i < contenders; ++i) {
+    threads.emplace_back([&]() {
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      const bool acquired = gate.try_acquire();
+      if (acquired) {
+        winners.fetch_add(1);
+      }
+      attempts.fetch_add(1, std::memory_order_release);
+      if (acquired) {
+        while (attempts.load(std::memory_order_acquire) != contenders) {
+          std::this_thread::yield();
+        }
+        gate.release();
+      }
+    });
+  }
+  start.store(true, std::memory_order_release);
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(attempts.load(), contenders);
+  EXPECT_EQ(winners.load(), 1u);
+  EXPECT_FALSE(gate.active());
+  EXPECT_TRUE(gate.try_acquire());
+}
+
+TEST(PyrowaveSignalContractTest, AcceptsSdrBt709LimitedAndFullAtEvenResolutions) {
+  static_assert(noexcept(pyrowave::validate_sdr_signal(2, 2, 0, 0, 2)));
+  static_assert(pyrowave::validate_sdr_signal(2, 2, 0, 0, 2) == nullptr);
+  for (const auto mode : { 2, 3 }) {
+    EXPECT_EQ(pyrowave::validate_sdr_signal(2, 2, 0, 0, mode), nullptr);
+    EXPECT_EQ(pyrowave::validate_sdr_signal(1920, 1080, 0, 0, mode), nullptr);
+    EXPECT_EQ(pyrowave::validate_sdr_signal(1280, 720, 0, 0, mode), nullptr);
+  }
+}
+
+TEST(PyrowaveSignalContractTest, RejectsNonpositiveOrOddDimensions) {
+  for (const auto dimension : { 0, -1, -2, 1, 1919, std::numeric_limits<int>::min() }) {
+    EXPECT_NE(pyrowave::validate_sdr_signal(dimension, 1080, 0, 0, 2), nullptr) << dimension;
+    EXPECT_NE(pyrowave::validate_sdr_signal(1920, dimension, 0, 0, 3), nullptr) << dimension;
+  }
+}
+
+TEST(PyrowaveSignalContractTest, RejectsHdrHlgAndUnknownDynamicRanges) {
+  for (const auto range : { 1, 2, -1, 3, std::numeric_limits<int>::max() }) {
+    for (const auto mode : { 2, 3, 4, 5 }) {
+      EXPECT_NE(pyrowave::validate_sdr_signal(1920, 1080, range, 0, mode), nullptr) << range;
+    }
+  }
+}
+
+TEST(PyrowaveSignalContractTest, RejectsNon420Chroma) {
+  for (const auto chroma : { -1, 1, 2, std::numeric_limits<int>::max() }) {
+    EXPECT_NE(pyrowave::validate_sdr_signal(1920, 1080, 0, chroma, 2), nullptr) << chroma;
+  }
+}
+
+TEST(PyrowaveSignalContractTest, RejectsRec601Bt2020AndMalformedCsc) {
+  for (const auto mode : { 0, 1, 4, 5, -1, -2, 6, 7, 2 | 0x100, 3 | 0x100,
+         std::numeric_limits<int>::min(), std::numeric_limits<int>::max() }) {
+    const auto reason = pyrowave::validate_sdr_signal(1920, 1080, 0, 0, mode);
+    ASSERT_NE(reason, nullptr) << mode;
+    EXPECT_NE(*reason, '\0');
+  }
 }
 
 TEST(PyrowaveConfigTest, RejectsOddYuv420Stream) {

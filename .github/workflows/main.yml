@@ -334,6 +334,8 @@ jobs:
         run: |
           if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
             ninja -C build pyrowave_unit_tests pyrowave_packetizer_probe \
+              CMakeFiles/sunshine.dir/src/rtsp.cpp.obj \
+              CMakeFiles/sunshine.dir/src/stream.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/cpu_encoder.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/gpu_encoder.cpp.obj
           else
