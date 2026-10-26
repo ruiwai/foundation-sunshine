@@ -485,7 +485,9 @@ namespace nvhttp {
       tree.put("root.LocalIP", net::addr_to_normalized_string(local_endpoint.address()));
     }
 
-    uint32_t codec_mode_flags = SCM_H264;
+    uint32_t codec_mode_flags = 0;
+#ifndef _WIN32
+    codec_mode_flags = SCM_H264;
     if (video::last_encoder_probe_supported_yuv444_for_codec[0]) {
       codec_mode_flags |= SCM_H264_HIGH8_444;
     }
@@ -513,6 +515,7 @@ namespace nvhttp {
         codec_mode_flags |= SCM_AV1_HIGH10_444;
       }
     }
+#endif
     tree.put("root.ServerCodecModeSupport", codec_mode_flags);
 
     auto current_appid = proc::proc.running();

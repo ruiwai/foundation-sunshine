@@ -35,6 +35,17 @@ namespace pyrowave {
     }
   }
 
+  std::uint32_t
+  server_capability_flags() noexcept {
+    return LI_PYROWAVE_CAPABILITY_REASSEMBLY |
+           LI_PYROWAVE_CAPABILITY_FRAME_DEADLINE |
+           LI_PYROWAVE_CAPABILITY_BLOCK_AWARE_FEC |
+           LI_PYROWAVE_CAPABILITY_FRAME_METADATA |
+           LI_PYROWAVE_CAPABILITY_SDR_BT709_YUV420 |
+           LI_PYROWAVE_CAPABILITY_YUV_FULL_RANGE |
+           LI_PYROWAVE_CAPABILITY_YUV_LIMITED_RANGE;
+  }
+
   bool
   is_experimental_video_format(std::uint32_t video_format) noexcept {
     return video_format == LI_PYROWAVE_VIDEO_FORMAT;

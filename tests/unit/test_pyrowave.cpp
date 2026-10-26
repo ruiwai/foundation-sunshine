@@ -43,6 +43,20 @@ extern "C" {
 
 namespace {
 
+  TEST(PyrowaveRuntimeTest, AdvertisesOnlyPrivateSdrCapabilities) {
+    const auto flags = pyrowave::server_capability_flags();
+    EXPECT_EQ(flags, LI_PYROWAVE_CAPABILITY_REASSEMBLY |
+                     LI_PYROWAVE_CAPABILITY_FRAME_DEADLINE |
+                     LI_PYROWAVE_CAPABILITY_BLOCK_AWARE_FEC |
+                     LI_PYROWAVE_CAPABILITY_FRAME_METADATA |
+                     LI_PYROWAVE_CAPABILITY_SDR_BT709_YUV420 |
+                     LI_PYROWAVE_CAPABILITY_YUV_FULL_RANGE |
+                     LI_PYROWAVE_CAPABILITY_YUV_LIMITED_RANGE);
+    EXPECT_EQ(flags & (LI_PYROWAVE_CAPABILITY_HDR10_PQ_BT2020 |
+                       LI_PYROWAVE_CAPABILITY_HLG_BT2020 |
+                       LI_PYROWAVE_CAPABILITY_DYNAMIC_HDR_MAPPING), 0u);
+  }
+
   static_assert(noexcept(pyrowave::validate_capture_backend(true, "vdd")));
   static_assert(pyrowave::validate_capture_backend(true, "") == nullptr);
   static_assert(pyrowave::validate_capture_backend(true, "vdd") == nullptr);

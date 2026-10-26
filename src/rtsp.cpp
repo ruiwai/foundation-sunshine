@@ -1264,6 +1264,7 @@ namespace rtsp_stream {
                     << ", AUDIO=" << ((encryption_flags_requested & SS_ENC_AUDIO) ? "1" : "0")
                     << ", MIC=" << ((encryption_flags_requested & SS_ENC_MIC) ? "1" : "0") << ")";
 
+#ifndef _WIN32
     if (video::last_encoder_probe_supported_ref_frames_invalidation) {
       ss << "a=x-nv-video[0].refPicInvalidation:1"sv << std::endl;
     }
@@ -1276,12 +1277,10 @@ namespace rtsp_stream {
       ss << "a=rtpmap:98 AV1/90000"sv << std::endl;
     }
 
+#endif
 #ifdef _WIN32
-    // Clients that do not advertise CAPABILITY_PYROWAVE ignore this Windows
-    // extension and negotiate one of the legacy formats below. Do not
-    // advertise it if this host cannot create the Vulkan runtime device; that
-    // lets clients fall back before ANNOUNCE instead of failing on the first
-    // encoded frame.
+    // Windows uses the private versioned extension; no legacy fallback.
+    // Advertise only when the runtime gate succeeds.
     if (pyrowave::is_server_runtime_available()) {
       // Select PyroWave only through the versioned x-ss-pyrowave contract.
       // Do not put its out-of-range numeric ID in the legacy bitStreamFormat
@@ -1290,16 +1289,7 @@ namespace rtsp_stream {
       ss << "a=x-ss-pyrowave.bitstreamVersion:" << LI_PYROWAVE_BITSTREAM_VERSION << std::endl;
       ss << "a=x-ss-pyrowave.payloadVersion:" << LI_PYROWAVE_PAYLOAD_VERSION << std::endl;
       ss << "a=x-ss-pyrowave.capabilityFlags:"
-         << (LI_PYROWAVE_CAPABILITY_REASSEMBLY |
-             LI_PYROWAVE_CAPABILITY_FRAME_DEADLINE |
-              LI_PYROWAVE_CAPABILITY_BLOCK_AWARE_FEC |
-              LI_PYROWAVE_CAPABILITY_FRAME_METADATA |
-             LI_PYROWAVE_CAPABILITY_SDR_BT709_YUV420 |
-             LI_PYROWAVE_CAPABILITY_YUV_FULL_RANGE |
-             LI_PYROWAVE_CAPABILITY_YUV_LIMITED_RANGE |
-             LI_PYROWAVE_CAPABILITY_HDR10_PQ_BT2020 |
-             LI_PYROWAVE_CAPABILITY_HLG_BT2020 |
-             LI_PYROWAVE_CAPABILITY_DYNAMIC_HDR_MAPPING)
+         << pyrowave::server_capability_flags()
          << std::endl;
       ss << "a=x-ss-pyrowave.maxPacketSize:" << LI_PYROWAVE_MAX_PACKET_SIZE << std::endl;
     }

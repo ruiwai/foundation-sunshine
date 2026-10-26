@@ -7,6 +7,9 @@
 #include <cstdint>
 
 namespace pyrowave {
+  [[nodiscard]] std::uint32_t
+  server_capability_flags() noexcept;
+
   /** Return true when a wire format is the experimental PyroWave format. */
   [[nodiscard]] bool
   is_experimental_video_format(std::uint32_t video_format) noexcept;

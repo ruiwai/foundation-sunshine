@@ -159,3 +159,6 @@ Status resets legacy codec flags; readiness is published only on success. Legacy
 Static/portable checks only (portable excludes video.cpp); changed Windows compilation/link and runtime validation remain pending.
 RTSP and capture reject non-PyroWave formats on Windows before legacy dispatch; legacy advertisement cleanup remains pending.
 Windows compilation/runtime validation of these rejection paths remains pending.
+
+Private-advertisements/v1: private SDR capabilities only; Windows legacy codec advertisement bits are zero.
+Portable checks cover the capability getter; Windows advertisement compilation and client discovery interoperability remain unverified/pending.
