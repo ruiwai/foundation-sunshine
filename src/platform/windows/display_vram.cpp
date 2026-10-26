@@ -3131,9 +3131,7 @@ namespace platf::dxgi {
         if (FAILED(base_.device->CreateTexture2D(&plane_desc, nullptr, &plane_textures_[slot][index]))) {
           return false;
         }
-        if (FAILED(base_.device->CreateShaderResourceView(
-              plane_textures_[slot][index].get(), nullptr, &plane_srvs_[slot][index])) ||
-            FAILED(base_.device->CreateUnorderedAccessView(
+        if (FAILED(base_.device->CreateUnorderedAccessView(
               plane_textures_[slot][index].get(), nullptr, &plane_uavs_[slot][index]))) {
           return false;
         }
@@ -3198,7 +3196,6 @@ namespace platf::dxgi {
     buf_t range_cb_;
     std::uint64_t adapter_luid_ = 0, generation_ = 0;
     std::array<std::array<texture2d_t, 3>, 2> plane_textures_;
-    std::array<std::array<shader_res_t, 3>, 2> plane_srvs_;
     std::array<std::array<uav_t, 3>, 2> plane_uavs_;
     std::array<std::array<shared_yuv_plane_t, 3>, 2> planes_ {};
     std::size_t selected_slot_ = 0;

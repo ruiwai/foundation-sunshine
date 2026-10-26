@@ -137,3 +137,5 @@ Full suite/roundtrip not run; no target UHD770 or Windows validation claimed.
 
 Direct-converter-init/v1: fused conversion uses device/context/display-only initialization, skipping unused generic color-buffer, sampler, blend, HDR/filter and runtime-status setup.
 Static extraction/dependency checks and portable CTest 2/2 passed; Windows compilation/runtime and hardware validation remain pending; no measured speedup claim.
+Unused-plane-SRVs/v1: removed six unused plane shader-resource views; textures, bind flags and UAVs unchanged.
+Windows compilation/runtime checks pending; no measured performance claim.
