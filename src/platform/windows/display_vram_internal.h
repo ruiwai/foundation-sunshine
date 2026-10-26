@@ -83,6 +83,10 @@ namespace platf::dxgi {
     ~img_d3d_t() override;
   };
 
+  bool
+  is_pyrowave_source_valid(const img_d3d_t &img, const D3D11_TEXTURE2D_DESC &desc,
+    std::uint64_t adapter_luid, std::uint64_t generation, UINT width, UINT height) noexcept;
+
   /**
    * Scoped key-0 lock used while the capture device writes an image.
    */

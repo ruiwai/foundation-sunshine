@@ -27,6 +27,19 @@ namespace platf::dxgi {
     }
   }
 
+  bool
+  is_pyrowave_source_valid(const img_d3d_t &img, const D3D11_TEXTURE2D_DESC &desc,
+    std::uint64_t adapter_luid, std::uint64_t generation, UINT width, UINT height) noexcept {
+    const auto &frame = img.frame_desc;
+    return !img.blank && !img.dummy && img.borrowed_vdd_texture && img.borrowed_vdd_frame &&
+           !img.linear_gamma && frame.borrowed && frame.adapter_luid == adapter_luid &&
+           frame.source_generation == generation && frame.encoding == pixel_encoding_class_e::unorm8 &&
+           frame.domain == frame_domain_e::sdr_rec709 && img.encoder_acquire_key == 2 && img.producer_release_key == 0 &&
+           desc.Width == width && desc.Height == height && desc.SampleDesc.Count == 1 &&
+           desc.ArraySize == 1 && desc.MipLevels == 1 &&
+           (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM);
+  }
+
   void
   img_d3d_t::note_borrowed_vdd_frame_returned() {
     auto counter = std::move(borrowed_vdd_inflight_counter);

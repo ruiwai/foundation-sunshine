@@ -3157,17 +3157,10 @@ namespace platf::dxgi {
     int
     convert(platf::img_t &image) override {
       auto &img = static_cast<img_d3d_t &>(image);
-      const auto &frame = img.frame_desc;
       D3D11_TEXTURE2D_DESC desc {};
       if (img.capture_texture) img.capture_texture->GetDesc(&desc);
       const auto &plane = planes_[selected_slot_][0];
-      if (img.blank || img.dummy || !img.borrowed_vdd_texture || !img.borrowed_vdd_frame ||
-          img.linear_gamma || !frame.borrowed || frame.adapter_luid != adapter_luid_ ||
-          frame.source_generation != generation_ || frame.encoding != pixel_encoding_class_e::unorm8 ||
-          frame.domain != frame_domain_e::sdr_rec709 || img.encoder_acquire_key != 2 || img.producer_release_key != 0 ||
-          desc.Width != plane.width || desc.Height != plane.height || desc.SampleDesc.Count != 1 ||
-          desc.ArraySize != 1 || desc.MipLevels != 1 ||
-          (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM && desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM)) {
+      if (!is_pyrowave_source_valid(img, desc, adapter_luid_, generation_, plane.width, plane.height)) {
         BOOST_LOG(error) << "PyroWave requires a fresh borrowed VDD SDR UNORM8 frame, matching adapter/generation/size, single sample/array/mip and keys 2->0";
         return -1;
       }

@@ -168,3 +168,6 @@ Pointer-to-reference correction is available; Windows compilation/link verificat
 Private-hidden-cursor/v1 requires capture_cursor=false and local cursor disabled; PyroWave enable requests and Windows cursor advertisement are disabled.
 Paired-client cursor verification is deferred; legacy input is unaffected.
 Portable policy coverage only; Windows compilation/runtime validation remains pending.
+Source-admission/v1: shared Windows helper preserves the existing per-frame predicate before direct conversion, without GPU calls or lease mutation.
+SourceLease regression covers admission fields/formats and real lease consumption with a scripted mutex, not GPU ordering/device loss.
+Windows compilation and execution of the new test remain pending; portable checks exclude it.
