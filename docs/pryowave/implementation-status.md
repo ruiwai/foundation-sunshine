@@ -47,13 +47,13 @@ Capture lifecycle, compatibility deletion and event-driven idle remain pending.
 Unreachable native fragment-renderer cleanup remains pending too.
 No full Sunshine link, Windows GPU interop runtime, paired-client decode,
 UHD770 quality/performance measurements or hardware soak is claimed here.
-- Native FP16 storage preflight + diagnostics: static review PASS; Linux build and feature test 1/1 PASS. Latest completed Windows CI remains `40356085453` (3/3 focused tests), not this publication head.
+- Native FP16 storage preflight + diagnostics: static review PASS; Linux build and feature test 1/1 PASS. Windows CI `40369678709` at `9bb052d`: changed objects compiled, including video/display; native features, probe and original WARP color test passed; borrowed-source WARP test failed.
 
 ## Current requirement evidence (not hardware acceptance)
 
 - Native `a1235e1`, host preflight pin `c39913a`; production fusion/startup `1ca36e8`.
-- Production CI `40365767443` at `1ca36e8` failed Windows compilation on protected capture identity fields; public const noexcept accessors fix the wrapper accesses, with Windows CI verification pending.
-- WARP borrowed-source test `6c482b8`: Windows runtime **PENDING**; no full Sunshine link/runtime claim. Historical passing runs above do not verify this fix.
+- Production CI `40365767443` at `1ca36e8` failed Windows compilation on protected capture identity fields; public const noexcept accessors fix the wrapper accesses; changed-object compilation passed in `40369678709`.
+- WARP borrowed-source test `6c482b8` failed in `40369678709`; acquire-before-binding ordering fix verification and new source-lease Windows coverage remain **PENDING**. No full Sunshine link/runtime claim; historical passes do not verify this fix.
 
 | Requirement | Code / tests; remaining evidence |
 | --- | --- |

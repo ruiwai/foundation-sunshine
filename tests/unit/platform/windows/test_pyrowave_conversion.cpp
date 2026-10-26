@@ -78,7 +78,7 @@ namespace {
           }
           const int got = output[y * (w / scale) + x];
           const int expected = reference(mean, plane, full);
-          EXPECT_LE(std::abs(got - expected), code_tolerance) << "plane=" << plane << " x=" << x << " y=" << y;
+          EXPECT_LE(std::abs(got - expected), code_tolerance) << "plane=" << plane << " x=" << x << " y=" << y << " got=" << got << " expected=" << expected;
           if (kind <= 1) {
             const int exact = plane != 0 ? 128 : (kind == 0 ? (full ? 0 : 16) : (full ? 255 : 235));
             EXPECT_EQ(got, exact);
@@ -151,15 +151,16 @@ namespace {
       ComPtr<ID3D11Buffer> constants;
       ASSERT_HRESULT_SUCCEEDED(device->CreateBuffer(&cb, &cb_data, &constants));
       ID3D11UnorderedAccessView *uavs[] = {views[0].Get(), views[1].Get(), views[2].Get()};
+      // Acquire before binding the source, like production convert_direct.
+      if (borrowed) {
+        ASSERT_EQ(consumer_mutex->AcquireSync(2, 1000), S_OK);
+        ASSERT_EQ(producer_mutex->AcquireSync(0, 0), WAIT_TIMEOUT);
+      }
       context->CSSetShader(shader.Get(), nullptr, 0);
       context->CSSetShaderResources(0, 1, srv.GetAddressOf());
       context->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
       context->CSSetConstantBuffers(0, 1, constants.GetAddressOf());
       // Extra group in both axes exercises safe oversized dispatch, even for 64x16.
-      if (borrowed) {
-        ASSERT_EQ(consumer_mutex->AcquireSync(2, 1000), S_OK);
-        ASSERT_EQ(producer_mutex->AcquireSync(0, 0), WAIT_TIMEOUT);
-      }
       context->Dispatch((w / 2 + 7) / 8 + 1, (h / 2 + 7) / 8 + 1, 1);
       context->ClearState(); // Unbind SRV, UAVs, constants and shader before copying.
       if (borrowed) {
