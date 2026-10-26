@@ -5,12 +5,24 @@
 #include "packet.h"
 
 #include <algorithm>
+#include <utility>
 
 extern "C" {
 #include "third-party/moonlight-common-c/src/PyrowaveProtocol.h"
 }
 
 namespace pyrowave {
+
+  std::vector<std::uint8_t>
+  packetization_result_t::take_bytes() {
+    std::vector<std::uint8_t> bytes;
+    if (bitstream.storage) {
+      bytes = bitstream.storage.unique() ? std::move(*bitstream.storage) : *bitstream.storage;
+    }
+    bitstream.storage.reset();
+    packets.clear();
+    return bytes;
+  }
 
   int
   limit_rtp_packet_size(int requested_packet_size, std::uint32_t max_wire_packet_size) noexcept {

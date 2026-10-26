@@ -20,8 +20,9 @@ namespace pyrowave {
   [[nodiscard]] int
   limit_rtp_packet_size(int requested_packet_size, std::uint32_t max_wire_packet_size) noexcept;
 
-  struct bitstream_buffer_t {
-    using storage_t = std::shared_ptr<const std::vector<std::uint8_t>>;
+  template<class Vector>
+  struct basic_bitstream_buffer_t {
+    using storage_t = std::shared_ptr<Vector>;
 
     storage_t storage {};
 
@@ -39,6 +40,8 @@ namespace pyrowave {
       return view().empty();
     }
   };
+
+  using bitstream_buffer_t = basic_bitstream_buffer_t<const std::vector<std::uint8_t>>;
 
   struct encoded_frame_t {
     frame_id_t frame_id = 0;
@@ -64,8 +67,10 @@ namespace pyrowave {
 
   struct packetization_result_t {
     failure_e failure = failure_e::none;
-    bitstream_buffer_t bitstream {};
+    basic_bitstream_buffer_t<std::vector<std::uint8_t>> bitstream {};
     std::vector<packet_span_t> packets;
+
+    [[nodiscard]] std::vector<std::uint8_t> take_bytes();
   };
 
   [[nodiscard]] bool

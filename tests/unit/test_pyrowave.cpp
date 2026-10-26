@@ -465,13 +465,48 @@ TEST(PyrowavePacketTest, OwnsEncodedBuffer) {
 }
 
 TEST(PyrowavePacketTest, RejectsOutOfBoundsPacket) {
-  auto bytes = std::make_shared<const std::vector<std::uint8_t>>(
+  auto bytes = std::make_shared<std::vector<std::uint8_t>>(
     std::initializer_list<std::uint8_t> { 1, 2, 3 });
   pyrowave::packetization_result_t result;
   result.bitstream.storage = bytes;
   result.packets.push_back({ 2, 2 });
 
   EXPECT_FALSE(pyrowave::validate(result));
+}
+
+TEST(PyrowavePacketTest, TakesUniqueOutputAllocation) {
+  pyrowave::packetization_result_t result;
+  result.bitstream.storage = std::make_shared<std::vector<std::uint8_t>>(3, 0x5a);
+  result.packets.push_back({ 0, 3 });
+  const auto *data = result.bitstream.view().data();
+  const auto bytes = result.take_bytes();
+  EXPECT_EQ(bytes.data(), data);
+  EXPECT_EQ(bytes, (std::vector<std::uint8_t> { 0x5a, 0x5a, 0x5a }));
+  EXPECT_FALSE(result.bitstream.storage);
+  EXPECT_TRUE(result.bitstream.empty());
+  EXPECT_TRUE(result.packets.empty());
+}
+
+TEST(PyrowavePacketTest, CopiesAliasedOutputWithoutChangingOtherOwners) {
+  pyrowave::packetization_result_t result;
+  auto alias = std::make_shared<std::vector<std::uint8_t>>(3, 0x5a);
+  result.bitstream.storage = alias;
+  result.packets.push_back({ 0, 3 });
+  auto bytes = result.take_bytes();
+  EXPECT_NE(bytes.data(), alias->data());
+  EXPECT_EQ(bytes, *alias);
+  bytes[0] = 0;
+  EXPECT_EQ(*alias, (std::vector<std::uint8_t> { 0x5a, 0x5a, 0x5a }));
+  EXPECT_FALSE(result.bitstream.storage);
+  EXPECT_TRUE(result.packets.empty());
+}
+
+TEST(PyrowavePacketTest, TakesNullOutputSafely) {
+  pyrowave::packetization_result_t result;
+  result.packets.push_back({ 0, 3 });
+  EXPECT_TRUE(result.take_bytes().empty());
+  EXPECT_FALSE(result.bitstream.storage);
+  EXPECT_TRUE(result.packets.empty());
 }
 
 TEST(PyrowaveConfigTest, AcceptsStaticHlgTransfer) {
@@ -1592,7 +1627,7 @@ TEST(PyrowavePacketizerTest, RejectsBoundariesThatCannotCarryWireHeaders) {
 TEST(PyrowavePacketTest, FailedPacketizationDoesNotExposePayload) {
   pyrowave::packetization_result_t result;
   result.failure = pyrowave::failure_e::packetization_failed;
-  result.bitstream.storage = std::make_shared<const std::vector<std::uint8_t>>(
+  result.bitstream.storage = std::make_shared<std::vector<std::uint8_t>>(
     std::initializer_list<std::uint8_t> { 1 });
 
   EXPECT_FALSE(pyrowave::validate(result));

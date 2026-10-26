@@ -104,3 +104,5 @@ Windows compilation/runtime not yet verified; no speedup claim.
 
 Packetizer reuses only temporary scratch; returned wire storage/spans remain independently owned.
 Windows transport uses a thread-local instance; no benchmark or Windows compilation claim.
+Packetized output transfers its full wire vector to transport without a full-wire copy only when uniquely owned; aliased output is copied without changing other owners.
+This removes neither encoded-bitstream readback nor other network copies; it is not an end-to-end zero-copy or speed claim.

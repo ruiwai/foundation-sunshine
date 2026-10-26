@@ -156,7 +156,7 @@ namespace platf::pyrowave_windows {
       }
 
       auto output = std::make_unique<video::packet_raw_generic>(
-        std::vector<std::uint8_t>(packetized.bitstream.view().begin(), packetized.bitstream.view().end()),
+        packetized.take_bytes(),
         frame_number,
         true);
       output->channel_data = channel_data;
