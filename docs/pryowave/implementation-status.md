@@ -54,6 +54,10 @@ UHD770 quality/performance measurements or hardware soak is claimed here.
 - Native `a1235e1`, host preflight pin `c39913a`; production fusion/startup `1ca36e8`.
 - Production CI `40365767443` at `1ca36e8` failed Windows compilation on protected capture identity fields; public const noexcept accessors fix the wrapper accesses; changed-object compilation passed in `40369678709`.
 - WARP borrowed-source test `6c482b8` failed in `40369678709`; acquire-before-binding ordering fix verification and new source-lease Windows coverage remain **PENDING**. No full Sunshine link/runtime claim; historical passes do not verify this fix.
+- Source-lease strict-success/v1 checks require `S_OK` on borrowed release and retain
+  pending leases/accounting when the borrowed mutex is missing; Windows checks pending.
+- CI `40372952762` was blocked before build/tests by DualSense download HTTP 504.
+  Replacement `40375057787` at `5c56d4e` is pending and does **not** include these new edits.
 
 | Requirement | Code / tests; remaining evidence |
 | --- | --- |

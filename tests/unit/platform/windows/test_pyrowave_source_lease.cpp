@@ -130,6 +130,37 @@ namespace {
     }
   }
 
+  TEST_F(SourceLease, AlreadyAcquiredReleaseRejectsSFalse) {
+    state.release = {S_FALSE};
+    EXPECT_FALSE(img->release_borrowed_vdd_after_convert(img->borrowed_vdd_mutex.get()));
+    expect_frame(true);
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0}));
+    EXPECT_TRUE(state.acquire_keys.empty()); EXPECT_TRUE(state.timeouts.empty());
+  }
+
+  TEST_F(SourceLease, AbandonReleaseRejectsSFalse) {
+    state.release = {S_FALSE};
+    EXPECT_FALSE(img->abandon_borrowed_vdd_frame(false, 16));
+    expect_frame(true);
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {2}));
+    EXPECT_EQ(state.timeouts, (std::vector<DWORD> {16}));
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0}));
+  }
+
+  TEST_F(SourceLease, MissingBorrowedMutexNeverCompletesLease) {
+    img->borrowed_vdd_mutex.reset();
+    EXPECT_FALSE(img->abandon_borrowed_vdd_frame(false, 16));
+    EXPECT_TRUE(img->borrowed_vdd_frame); EXPECT_TRUE(img->borrowed_vdd_texture);
+    EXPECT_FALSE(img->borrowed_vdd_mutex);
+    EXPECT_EQ(img->borrowed_vdd_slot, 1u); EXPECT_EQ(img->encoder_acquire_key, 2u);
+    EXPECT_EQ(img->encoder_release_key, 0u); EXPECT_EQ(img->producer_release_key, 0u);
+    EXPECT_EQ(img->borrowed_vdd_inflight_counter, counter); EXPECT_EQ(counter->load(), 1u);
+    img.reset();
+    EXPECT_EQ(counter->load(), 1u); EXPECT_TRUE(state.destroyed);
+    EXPECT_TRUE(state.acquire_keys.empty()); EXPECT_TRUE(state.timeouts.empty());
+    EXPECT_TRUE(state.release_keys.empty());
+  }
+
   TEST_F(SourceLease, MissingEncoderMutexKeepsLeaseForSafeCleanup) {
     EXPECT_FALSE(img->release_borrowed_vdd_after_convert(nullptr));
     expect_frame(true);

@@ -44,7 +44,7 @@ namespace platf::dxgi {
     }
 
     HRESULT status = encoder_mutex->ReleaseSync(producer_release_key);
-    if (FAILED(status)) {
+    if (status != S_OK) {
       BOOST_LOG(warning) << "[vdd] failed to return borrowed slot "sv
                          << borrowed_vdd_slot << " after convert [0x"sv
                          << util::hex(status).to_string_view() << ']';
@@ -58,11 +58,15 @@ namespace platf::dxgi {
 
   bool
   img_d3d_t::abandon_borrowed_vdd_frame(bool log_busy, DWORD timeout_ms) {
+    if (borrowed_vdd_frame && !borrowed_vdd_mutex) {
+      BOOST_LOG(warning) << "[vdd] failed to return borrowed slot "sv << borrowed_vdd_slot << ": missing borrowed mutex"sv;
+      return false;
+    }
     if (borrowed_vdd_frame && borrowed_vdd_mutex) {
       HRESULT status = borrowed_vdd_mutex->AcquireSync(encoder_acquire_key, timeout_ms);
       if (status == S_OK) {
         status = borrowed_vdd_mutex->ReleaseSync(producer_release_key);
-        if (FAILED(status)) {
+        if (status != S_OK) {
           BOOST_LOG(warning) << "[vdd] failed to return borrowed slot "sv
                              << borrowed_vdd_slot << " [0x"sv
                              << util::hex(status).to_string_view() << ']';
