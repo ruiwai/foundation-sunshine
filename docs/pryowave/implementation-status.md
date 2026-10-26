@@ -129,3 +129,5 @@ Windows compilation/runtime validation of this shrink remains pending.
 
 Mandatory-borrow cleanup/v1: VDD borrowing is mandatory; no environment/config switch remains.
 Runtime performance remains unmeasured; Windows compilation/runtime validation pending.
+Focused host-link option/v1: explicitly set `pyrowave_tests_only=true` and `pyrowave_link_host=true` to also link the Sunshine executable; only the same focused CTest entries run.
+Default fast focused builds remain unchanged; Windows host-link validation is pending, with no full-app/runtime or hardware acceptance claimed.

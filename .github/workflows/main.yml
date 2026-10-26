@@ -20,6 +20,10 @@ on:
         description: 'Focused PyroWave tests plus encoder compile check, no packaging'
         type: boolean
         default: false
+      pyrowave_link_host:
+        description: 'Optional Sunshine executable link during focused tests'
+        type: boolean
+        default: false
       gui_run_id:
         description: 'Optional successful Panel artifact run; its commit must match the Panel submodule'
         type: string
@@ -332,6 +336,7 @@ jobs:
         shell: msys2 {0}
         env:
           PYROWAVE_TESTS_ONLY: ${{ inputs.pyrowave_tests_only || false }}
+          PYROWAVE_LINK_HOST: ${{ inputs.pyrowave_link_host || false }}
           CCACHE_DIR: ${{ github.workspace }}\.ccache
           CCACHE_MAXSIZE: 2G
           CCACHE_COMPILERCHECK: content
@@ -347,6 +352,9 @@ jobs:
               CMakeFiles/sunshine.dir/src/platform/windows/display_base.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/display_vdd.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/display_vram.cpp.obj
+            if [[ "${PYROWAVE_LINK_HOST:-false}" == "true" ]]; then
+              ninja -C build sunshine
+            fi
           else
             ninja -C build
           fi
