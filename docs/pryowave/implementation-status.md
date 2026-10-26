@@ -52,7 +52,8 @@ UHD770 quality/performance measurements or hardware soak is claimed here.
 ## Current requirement evidence (not hardware acceptance)
 
 - Native `a1235e1`, host preflight pin `c39913a`; production fusion/startup `1ca36e8`.
-- WARP borrowed-source test `6c482b8`: Windows **NOT RUN**. Production CI `40365767443` still in progress, last checked at `Build Windows`; no full Sunshine link/runtime claim.
+- Production CI `40365767443` at `1ca36e8` failed Windows compilation on protected capture identity fields; public const noexcept accessors fix the wrapper accesses, with Windows CI verification pending.
+- WARP borrowed-source test `6c482b8`: Windows runtime **PENDING**; no full Sunshine link/runtime claim. Historical passing runs above do not verify this fix.
 
 | Requirement | Code / tests; remaining evidence |
 | --- | --- |

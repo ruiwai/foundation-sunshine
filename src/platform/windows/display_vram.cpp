@@ -3085,8 +3085,8 @@ namespace platf::dxgi {
         BOOST_LOG(error) << "PyroWave requires SDR, no HDR metadata/enhancement/filter, equal display/output sizes and no rotation";
         return false;
       }
-      adapter_luid_ = display->capture_adapter_luid;
-      generation_ = display->capture_source_generation;
+      adapter_luid_ = display->capture_adapter_id();
+      generation_ = display->capture_generation_id();
       if (!adapter_luid_ || !generation_) {
         BOOST_LOG(error) << "PyroWave requires a known nonzero VDD capture adapter LUID and source generation at initialization";
         return false;
