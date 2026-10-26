@@ -4,9 +4,11 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <vector>
-#include <d3d11.h>
+#include <d3d11_1.h>
 #include <d3dcompiler.h>
+#include <dxgi1_2.h>
 #include <wrl/client.h>
 
 namespace {
@@ -88,7 +90,7 @@ namespace {
       }
     }
 
-    void run(unsigned w, unsigned h, bool full, unsigned kind) {
+    void run(unsigned w, unsigned h, bool full, unsigned kind, bool borrowed = false) {
       const auto input = pattern(w, h, kind);
       D3D11_TEXTURE2D_DESC desc {};
       desc.Width = w; desc.Height = h; desc.MipLevels = 1; desc.ArraySize = 1;
@@ -96,11 +98,43 @@ namespace {
       desc.SampleDesc.Count = 1; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
       D3D11_SUBRESOURCE_DATA initial {input.data(), w * 4, 0};
       ComPtr<ID3D11Texture2D> source;
-      ASSERT_HRESULT_SUCCEEDED(device->CreateTexture2D(&desc, &initial, &source));
+      ComPtr<ID3D11Device> producer;
+      ComPtr<ID3D11DeviceContext> producer_context;
+      ComPtr<ID3D11Texture2D> producer_source;
+      ComPtr<IDXGIKeyedMutex> producer_mutex, consumer_mutex;
+      std::unique_ptr<void, decltype(&CloseHandle)> shared_handle(nullptr, &CloseHandle);
+      if (borrowed) {
+        const D3D_FEATURE_LEVEL required = D3D_FEATURE_LEVEL_11_0;
+        ASSERT_HRESULT_SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
+          &required, 1, D3D11_SDK_VERSION, &producer, nullptr, &producer_context));
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+        ASSERT_HRESULT_SUCCEEDED(producer->CreateTexture2D(&desc, nullptr, &producer_source));
+        ASSERT_HRESULT_SUCCEEDED(producer_source.As(&producer_mutex));
+        ASSERT_EQ(producer_mutex->AcquireSync(0, 1000), S_OK);
+        producer_context->UpdateSubresource(producer_source.Get(), 0, nullptr, input.data(), w * 4, 0);
+        ComPtr<IDXGIResource1> resource;
+        ASSERT_HRESULT_SUCCEEDED(producer_source.As(&resource));
+        HANDLE handle = nullptr;
+        ASSERT_HRESULT_SUCCEEDED(resource->CreateSharedHandle(nullptr,
+          DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr, &handle));
+        shared_handle.reset(handle);
+        ComPtr<ID3D11Device1> consumer;
+        ASSERT_HRESULT_SUCCEEDED(device.As(&consumer));
+        ASSERT_HRESULT_SUCCEEDED(consumer->OpenSharedResource1(shared_handle.get(), IID_PPV_ARGS(&source)));
+        ASSERT_HRESULT_SUCCEEDED(source.As(&consumer_mutex));
+        ASSERT_EQ(consumer_mutex->AcquireSync(2, 0), WAIT_TIMEOUT);
+        producer_context->Flush();
+        ASSERT_EQ(producer_mutex->ReleaseSync(2), S_OK);
+      }
+      else {
+        ASSERT_HRESULT_SUCCEEDED(device->CreateTexture2D(&desc, &initial, &source));
+      }
       ComPtr<ID3D11ShaderResourceView> srv;
       ASSERT_HRESULT_SUCCEEDED(device->CreateShaderResourceView(source.Get(), nullptr, &srv));
       std::array<ComPtr<ID3D11Texture2D>, 3> planes, staging;
       std::array<ComPtr<ID3D11UnorderedAccessView>, 3> views;
+      desc.MiscFlags = 0; // Output planes and staging must not inherit source sharing.
       for (unsigned p = 0; p < 3; ++p) {
         desc.Width = p == 0 ? w : w / 2; desc.Height = p == 0 ? h : h / 2;
         desc.Format = DXGI_FORMAT_R8_UNORM; desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
@@ -122,8 +156,22 @@ namespace {
       context->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
       context->CSSetConstantBuffers(0, 1, constants.GetAddressOf());
       // Extra group in both axes exercises safe oversized dispatch, even for 64x16.
+      if (borrowed) {
+        ASSERT_EQ(consumer_mutex->AcquireSync(2, 1000), S_OK);
+        ASSERT_EQ(producer_mutex->AcquireSync(0, 0), WAIT_TIMEOUT);
+      }
       context->Dispatch((w / 2 + 7) / 8 + 1, (h / 2 + 7) / 8 + 1, 1);
       context->ClearState(); // Unbind SRV, UAVs, constants and shader before copying.
+      if (borrowed) {
+        context->Flush();
+        ASSERT_EQ(consumer_mutex->ReleaseSync(0), S_OK);
+        // Reuse the borrowed source before any output Map or CPU completion wait.
+        ASSERT_EQ(producer_mutex->AcquireSync(0, 1000), S_OK);
+        const auto white = pattern(w, h, 1);
+        producer_context->UpdateSubresource(producer_source.Get(), 0, nullptr, white.data(), w * 4, 0);
+        producer_context->Flush();
+        ASSERT_EQ(producer_mutex->ReleaseSync(2), S_OK);
+      }
       for (unsigned p = 0; p < 3; ++p) {
         context->CopyResource(staging[p].Get(), planes[p].Get());
         D3D11_MAPPED_SUBRESOURCE mapped {};
@@ -137,6 +185,13 @@ namespace {
       }
     }
   };
+
+  TEST_F(PyrowaveConversion, WarpBorrowedSourceHandoffPreservesConvertedPlanes) {
+    for (bool full : {false, true}) {
+      SCOPED_TRACE(testing::Message() << "full=" << full);
+      ASSERT_NO_FATAL_FAILURE(run(18, 10, full, 7, true));
+    }
+  }
 
   TEST_F(PyrowaveConversion, WarpMatchesCenteredBt709Reference) {
     // Software WARP correctness only; UHD hardware and performance are deferred.
