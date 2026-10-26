@@ -49,7 +49,9 @@ The user waived further investigation of this error; it remains a known failure.
 Production now routes fused conversion into shared R8 planes and rejects
 non-borrowed/unsupported sources; Windows validation of this routing is pending.
 Capture lifecycle, compatibility deletion and event-driven idle remain pending.
-Unreachable native fragment-renderer cleanup remains pending too.
+Native fragment renderer removed: pin `665b2e6cedc3beb6c575aedcf7d187e6b5de4f17` (net -414 dead lines).
+Native build and features 1/1 PASS; generated shaders/API unchanged.
+GPU roundtrip waived (known failure above retained); Windows validation pending.
 No full Sunshine link, Windows GPU interop runtime, paired-client decode,
 UHD770 quality/performance measurements or hardware soak is claimed here.
 - Native FP16 storage preflight + diagnostics: static review PASS; Linux build and feature test 1/1 PASS. Windows CI `40369678709` at `9bb052d`: changed objects compiled, including video/display; native features, probe and original WARP color test passed; borrowed-source WARP test failed.
