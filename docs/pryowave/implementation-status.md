@@ -78,8 +78,8 @@ All hardware gates remain deferred in the [hardware checklist](hardware-validati
 
 GPU-only DXGI Intel/UHD770 exact-identity preflight now precedes conversion planes
 and native allocation. Identity is not feature/format/sync support; native and LUID
-checks remain. CPU fallback routing is unchanged; removal remains pending replacement
-Windows tests. Windows compilation of this gate is pending.
+checks remain. CPU fallback is removed; PyroWave requires GPU capture and shuts down
+on backend failure. Windows compilation of this deletion and the gate is pending.
 
 Per-frame release verification/v1 checks D3D completion after each successful Vulkan
 CPU wait, before ring release; failures retain ring poisoning and the 1000 ms event wait.
@@ -87,7 +87,8 @@ Portable coverage tests only the completion predicate; Windows compilation/runti
 Lifecycle is **not complete**: native `321909d` bounds five encoder readback APIs with a 1 s `wait_timeout`, failing before mapping on timeout.
 Helper fixture and native build/feature test (1/1) passed; context/device teardown and decoder waits remain unbounded.
 GPU-stall behavior and an end-to-end bound remain unverified.
-Windows run `40378882947` at `8377e82` predates the native pin and remains **PENDING**; it does not validate the new pin.
+Windows run `40378882947` at `8377e82` **PASSED** changed-object compilation, three test-binary links, WARP 2/2, source-lease 8/8, 81 unit cases and 3/3 CTest entries.
+It predates this CPU deletion, native `321909d` and new host-stage stats; their Windows validation remains **PENDING**, not full-app/hardware acceptance.
 
 Host-stage baseline observations/v1: constructor logs ring slots, shared plane images, logical R8 plane bytes (excluding padding/driver allocation, not measured VRAM), and maximum bitstream buffer bytes.
 Existing encoded-frame verbose logs add session identity and integer steady-clock microseconds for native encode call, return-to-checked-release/ring completion, and release-to-readback/packet flatten completion (before transport publication).

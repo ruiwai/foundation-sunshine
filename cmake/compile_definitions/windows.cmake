@@ -189,8 +189,6 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram_internal.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/cpu_encoder.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/cpu_encoder.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/gpu_encoder.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/gpu_encoder.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/transport.cpp"

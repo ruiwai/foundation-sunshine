@@ -48,7 +48,6 @@ extern "C" {
 
 #ifdef _WIN32
   #include "nvenc/win/nvenc_dynamic_factory.h"
-  #include "platform/windows/pyrowave/cpu_encoder.h"
   #include "platform/windows/pyrowave/gpu_encoder.h"
   #include "platform/windows/pyrowave/color_metadata.h"
   #include "platform/windows/display.h"
@@ -2679,12 +2678,6 @@ namespace video {
       return platf::pyrowave_windows::encode_gpu_frame(
         frame_nr, session, packets, channel_data, frame_timestamp, std::move(pipeline_trace));
     }
-    else {
-      if (!pipeline_trace) pipeline_trace.emplace();
-      pipeline_trace->pyrowave = true;
-      return platf::pyrowave_windows::encode_frame(
-        frame_nr, session, packets, channel_data, frame_timestamp, std::move(pipeline_trace));
-    }
 #endif
 
     return -1;
@@ -4312,12 +4305,6 @@ namespace video {
     // Cache window capture mode check outside the loop
     const bool is_window_capture = (config::video.capture_target == "window");
     const bool is_pyrowave = config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT);
-#ifdef _WIN32
-    bool pyrowave_gpu_disabled = false;
-    bool pyrowave_session_is_gpu = false;
-    bool pyrowave_fallback_reinit_pending = false;
-    bool pyrowave_terminal_failure_pending = false;
-#endif
 
     // Track display dimensions for resolution change detection
     int last_display_width = 0;
@@ -4496,124 +4483,23 @@ namespace video {
                            << pyrowave_packet_boundary;
           return;
         }
-        const bool pyrowave_cpu_fallback_allowed =
-          config.dynamicRange == 0 &&
-          config.pre_encode_filter == platf::pre_encode_filter_e::none;
         // These callbacks run after this branch ends. Copy branch-local
         // invariants; only the enclosing capture state may be referenced.
-        session_factory = [&config, &display, &ref,
-                           &pyrowave_gpu_disabled, &pyrowave_session_is_gpu,
-                           &pyrowave_fallback_reinit_pending, &pyrowave_terminal_failure_pending,
-                           pyrowave_packet_boundary,
-                           pyrowave_frame_rate_num, pyrowave_frame_rate_den,
-                           pyrowave_cpu_fallback_allowed]() -> std::unique_ptr<encode_session_t> {
-          pyrowave_session_is_gpu = false;
-          if (!pyrowave_gpu_disabled) {
-            if (auto base_display = std::dynamic_pointer_cast<platf::dxgi::display_vram_t>(display)) {
-              auto gpu_session = platf::pyrowave_windows::make_gpu_encoder(
-                base_display, config, pyrowave_packet_boundary,
-                pyrowave_frame_rate_num,
-                pyrowave_frame_rate_den);
-              if (gpu_session) {
-                pyrowave_session_is_gpu = true;
-                return gpu_session;
-              }
-
-              if (!pyrowave_cpu_fallback_allowed) {
-                pyrowave_fallback_reinit_pending = false;
-                pyrowave_terminal_failure_pending = true;
-                BOOST_LOG(error) << "PyroWave GPU backend could not be initialized; "
-                                 << "the requested HDR or enhancement path has no CPU fallback"sv;
-                return nullptr;
-              }
-
-              pyrowave_gpu_disabled = true;
-            }
-          }
-
-          if (!pyrowave_cpu_fallback_allowed) {
-            pyrowave_fallback_reinit_pending = false;
-            pyrowave_terminal_failure_pending = true;
-            BOOST_LOG(error) << "PyroWave GPU backend is unavailable; CPU staging cannot satisfy "
-                             << "the requested HDR or enhancement path"sv;
+        session_factory = [&config, &display, pyrowave_packet_boundary,
+                           pyrowave_frame_rate_num, pyrowave_frame_rate_den]() -> std::unique_ptr<encode_session_t> {
+          auto base_display = std::dynamic_pointer_cast<platf::dxgi::display_vram_t>(display);
+          if (!base_display) {
+            BOOST_LOG(error) << "PyroWave requires GPU-backed capture; CPU fallback is unavailable"sv;
             return nullptr;
           }
-          if (!std::dynamic_pointer_cast<platf::dxgi::display_ram_t>(display)) {
-            auto lock = ref->capture_policy.lock();
-            if (!std::dynamic_pointer_cast<platf::dxgi::display_vram_t>(display) ||
-                !ref->capture_policy->request_system_capture()) {
-              pyrowave_fallback_reinit_pending = false;
-              pyrowave_terminal_failure_pending = true;
-              BOOST_LOG(error) << "PyroWave CPU fallback cannot change the capture type of other active sessions"sv;
-              return nullptr;
-            }
-            pyrowave_fallback_reinit_pending = true;
-            ref->force_system_capture.store(true, std::memory_order_release);
-            ref->reinit_event.raise(true);
-            BOOST_LOG(warning) << "PyroWave GPU backend unavailable; requesting system-memory capture for this session"sv;
-            return nullptr;
-          }
-          // The first CPU attempt after a GPU failure is reached only after
-          // the shared capture thread has been asked to reinitialize.  Once
-          // this factory is entered, a later CPU failure is a real terminal
-          // failure rather than the pending fallback transition.
-          pyrowave_fallback_reinit_pending = false;
-          auto cpu_session = platf::pyrowave_windows::make_encoder(
-            config.width, config.height, pyrowave_packet_boundary,
-            (config.encoderCscMode & 0x1) != 0,
-            config.dynamicRange,
-            config.bitrate,
-            pyrowave_frame_rate_num,
-            pyrowave_frame_rate_den,
-            config.perf_session_id);
-          if (!cpu_session) {
-            BOOST_LOG(error) << "PyroWave CPU backend could not be initialized"sv;
-          }
-          return cpu_session;
+          return platf::pyrowave_windows::make_gpu_encoder(
+            base_display, config, pyrowave_packet_boundary,
+            pyrowave_frame_rate_num, pyrowave_frame_rate_den);
         };
-        backend_failure_handler = [&ref, &shutdown_event,
-                                   &pyrowave_gpu_disabled, &pyrowave_session_is_gpu,
-                                   &pyrowave_fallback_reinit_pending, &pyrowave_terminal_failure_pending,
-                                   pyrowave_cpu_fallback_allowed]() {
-          if (pyrowave_terminal_failure_pending) {
-            pyrowave_terminal_failure_pending = false;
-            BOOST_LOG(error) << "PyroWave backend initialization failed with no supported fallback; ending video session"sv;
-            shutdown_event->raise(true);
-          }
-          else if (pyrowave_session_is_gpu && !pyrowave_cpu_fallback_allowed) {
-            pyrowave_session_is_gpu = false;
-            pyrowave_fallback_reinit_pending = false;
-            BOOST_LOG(error) << "PyroWave GPU backend failed; the requested HDR or enhancement path "
-                             << "cannot fall back to CPU staging"sv;
-            shutdown_event->raise(true);
-          }
-          else if (pyrowave_session_is_gpu) {
-            pyrowave_session_is_gpu = false;
-            pyrowave_gpu_disabled = true;
-            {
-              auto lock = ref->capture_policy.lock();
-              if (!ref->capture_policy->request_system_capture()) {
-                pyrowave_fallback_reinit_pending = false;
-                BOOST_LOG(error) << "PyroWave GPU backend failed; preserving capture for other active sessions"sv;
-                shutdown_event->raise(true);
-                return;
-              }
-            }
-            pyrowave_fallback_reinit_pending = true;
-            ref->force_system_capture.store(true, std::memory_order_release);
-            ref->reinit_event.raise(true);
-            BOOST_LOG(warning) << "PyroWave GPU backend failed; requesting shared system-memory capture reinitialization"sv;
-          }
-          else if (pyrowave_fallback_reinit_pending) {
-            // A failed GPU factory has already requested display reinit. The
-            // encoder loop must return and let the shared capture owner finish
-            // that transition; shutting down here would defeat the fallback.
-            BOOST_LOG(debug) << "PyroWave fallback reinitialization is pending; waiting for the shared capture thread"sv;
-          }
-          else {
-            BOOST_LOG(error) << "PyroWave CPU backend failed; ending video session"sv;
-            shutdown_event->raise(true);
-          }
+        backend_failure_handler = [&shutdown_event]() {
+          BOOST_LOG(error) << "PyroWave GPU backend initialization or encoding failed; no CPU fallback is available. "
+                           << "Check GPU capture, adapter compatibility and preceding backend errors; ending video session"sv;
+          shutdown_event->raise(true);
         };
 #endif
       }

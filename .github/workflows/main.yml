@@ -337,7 +337,6 @@ jobs:
               CMakeFiles/sunshine.dir/src/video.cpp.obj \
               CMakeFiles/sunshine.dir/src/rtsp.cpp.obj \
               CMakeFiles/sunshine.dir/src/stream.cpp.obj \
-              CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/cpu_encoder.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/gpu_encoder.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/display_vram.cpp.obj
           else
