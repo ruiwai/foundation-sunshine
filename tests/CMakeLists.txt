@@ -211,7 +211,10 @@ target_link_libraries(pyrowave_unit_tests PRIVATE sunshine::host_headers)
 target_compile_options(pyrowave_unit_tests PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>)
 set_target_properties(pyrowave_unit_tests PROPERTIES CXX_STANDARD 23)
 if (WIN32)
+    target_include_directories(pyrowave_unit_tests SYSTEM BEFORE PRIVATE "${AMF_SDK_STAGE}")
     target_sources(pyrowave_unit_tests PRIVATE
+            ${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram_internal.cpp
+            ${CMAKE_SOURCE_DIR}/tests/unit/platform/windows/test_pyrowave_source_lease.cpp
             ${CMAKE_SOURCE_DIR}/src/pyrowave/dynamic_hdr.cpp
             ${CMAKE_SOURCE_DIR}/src/video_hdr_metadata.cpp
             ${CMAKE_SOURCE_DIR}/src/video_dolby_vision.cpp
