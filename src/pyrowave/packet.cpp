@@ -42,7 +42,7 @@ namespace pyrowave {
   bool
   validate(const encoded_frame_t &frame) noexcept {
     return frame.frame_id != 0 && frame.kind == frame_kind_e::intra && !frame.bitstream.empty() &&
-           validate(frame.deadline);
+           validate(frame.deadline) && frame.payload_size <= frame.bitstream.view().size();
   }
 
   bool

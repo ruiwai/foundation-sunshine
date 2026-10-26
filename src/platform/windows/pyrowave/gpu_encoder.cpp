@@ -280,7 +280,7 @@ namespace platf::pyrowave_windows {
           return;
         }
 
-        bitstream_.resize(maximum_bitstream_size);
+        bitstream_ = std::make_shared<std::vector<std::uint8_t>>(maximum_bitstream_size);
         const auto initial_frame_budget = pyrowave_frame_budget(
           bitrate_kbps_, frame_rate_num_, frame_rate_den_);
         BOOST_LOG(info) << "[PyroWaveEncoder][GPU] rate-control budget="
@@ -367,7 +367,7 @@ namespace platf::pyrowave_windows {
         BOOST_LOG(verbose) << "[PyroWaveEncoder][GPU] encode frame=" << frame_number
                             << ", size=" << width_ << 'x' << height_
                             << ", packet_boundary=" << packet_boundary_
-                            << ", bitstream_capacity=" << bitstream_.size();
+                            << ", bitstream_capacity=" << bitstream_->size();
 
         const auto acquire_value = sync_value_ + 1;
         const auto release_value = acquire_value + 1;
@@ -439,32 +439,24 @@ namespace platf::pyrowave_windows {
         std::size_t written_packets = 0;
         const auto packetize_result = pyrowave_encoder_packetize(
           encoder_.get(), source_packets_.data(), packet_boundary_, &written_packets,
-          bitstream_.data(), bitstream_.size());
+          bitstream_->data(), bitstream_->size());
         if (packetize_result != PYROWAVE_SUCCESS || written_packets == 0 || written_packets > packet_count) {
           return encode_failure(frame_number, "pyrowave-packetize", static_cast<int>(packetize_result), 0, written_packets, true);
         }
 
-        std::vector<std::uint8_t> encoded;
         std::size_t encoded_size = 0;
         for (std::size_t index = 0; index < written_packets; ++index) {
           const auto &packet = source_packets_[index];
-          if (packet.offset > bitstream_.size() ||
-              packet.size > bitstream_.size() - packet.offset ||
+          if (packet.offset != encoded_size || packet.offset > bitstream_->size() ||
+              packet.size > bitstream_->size() - packet.offset ||
               packet.size > maximum_bitstream_size - encoded_size) {
             return encode_failure(frame_number, "packet-bounds", 0, packet.size, written_packets, true);
           }
           encoded_size += packet.size;
         }
-        encoded.reserve(encoded_size);
-        for (std::size_t index = 0; index < written_packets; ++index) {
-          const auto &packet = source_packets_[index];
-          encoded.insert(
-            encoded.end(),
-            bitstream_.begin() + packet.offset,
-            bitstream_.begin() + packet.offset + packet.size);
+        if (encoded_size == 0) {
+          return encode_failure(frame_number, "empty-bitstream", 0, 0, written_packets, true);
         }
-
-        auto storage = std::make_shared<const std::vector<std::uint8_t>>(std::move(encoded));
         const auto host_packetize_complete = std::chrono::steady_clock::now();
         BOOST_LOG(verbose) << "[PyroWaveEncoder][GPU] encoded frame=" << frame_number
                             << ", perf_session_id=" << perf_session_id_
@@ -472,17 +464,17 @@ namespace platf::pyrowave_windows {
                             << ", host_release_wait_us=" << std::chrono::duration_cast<std::chrono::microseconds>(host_release_checked - host_encode_return).count()
                             << ", host_readback_packetize_us=" << std::chrono::duration_cast<std::chrono::microseconds>(host_packetize_complete - host_release_checked).count()
                             << ", source_packets=" << written_packets
-                            << ", encoded_bytes=" << storage->size();
+                            << ", encoded_bytes=" << encoded_size;
         const auto publish_result = publish_transport_frame(
           frame_number,
-          std::move(storage),
+          bitstream_,
           packet_boundary_,
           rtp_timestamp(frame_number),
           packets,
           channel_data,
           frame_timestamp,
           std::move(pipeline_trace),
-          nullptr);
+          nullptr, encoded_size);
         if (!publish_result.success) {
           return encode_failure(
             frame_number,
@@ -609,7 +601,7 @@ namespace platf::pyrowave_windows {
       std::uint64_t sync_value_ = 0;
       bool fence_return_verified_ = false;
       std::vector<pyrowave_packet> source_packets_;
-      std::vector<std::uint8_t> bitstream_;
+      std::shared_ptr<std::vector<std::uint8_t>> bitstream_;
     };
   }  // namespace
 

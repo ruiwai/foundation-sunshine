@@ -57,7 +57,8 @@ namespace pyrowave {
     packetize(const encoded_frame_t &frame, const packetization_request_t &request) noexcept override {
       const auto frame_valid = validate(frame);
       const auto request_valid = validate(request);
-      const auto input = frame.bitstream.view();
+      const auto input = frame_valid && frame.payload_size != 0 ?
+        frame.bitstream.view().first(frame.payload_size) : frame.bitstream.view();
       const auto metadata_length = request.metadata.size();
       const auto metadata_valid = validate_metadata(request.metadata);
       if (!frame_valid || !request_valid || !metadata_valid ||

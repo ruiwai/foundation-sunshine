@@ -464,6 +464,29 @@ TEST(PyrowavePacketTest, OwnsEncodedBuffer) {
   EXPECT_EQ(frame.bitstream.view()[1], 2u);
 }
 
+TEST(PyrowavePacketTest, ValidatesPayloadPrefixAndDefaultsToWholeStorage) {
+  pyrowave::encoded_frame_t frame {
+    .frame_id = 1,
+    .bitstream = { std::make_shared<const std::vector<std::uint8_t>>(301, 0x42) },
+  };
+  auto packetizer = pyrowave::make_transport_packetizer();
+  ASSERT_EQ(frame.payload_size, 0u);
+  ASSERT_TRUE(pyrowave::validate(frame));
+  const auto whole = packetizer->packetize(frame, {});
+  frame.payload_size = frame.bitstream.view().size();
+  ASSERT_TRUE(pyrowave::validate(frame));
+  const auto exact = packetizer->packetize(frame, {});
+  ASSERT_EQ(whole.failure, pyrowave::failure_e::none);
+  ASSERT_EQ(exact.failure, pyrowave::failure_e::none);
+  EXPECT_EQ(*whole.bitstream.storage, *exact.bitstream.storage);
+  ++frame.payload_size;
+  EXPECT_FALSE(pyrowave::validate(frame));
+  const auto rejected = packetizer->packetize(frame, {});
+  EXPECT_NE(rejected.failure, pyrowave::failure_e::none);
+  EXPECT_TRUE(rejected.bitstream.empty());
+  EXPECT_TRUE(rejected.packets.empty());
+}
+
 TEST(PyrowavePacketTest, RejectsOutOfBoundsPacket) {
   auto bytes = std::make_shared<std::vector<std::uint8_t>>(
     std::initializer_list<std::uint8_t> { 1, 2, 3 });
@@ -639,7 +662,13 @@ TEST(PyrowavePacketizerTest, ReusesOnlyScratchAndPreservesEarlierResults) {
         LI_PYROWAVE_METADATA_FLAG_PROTECTED | LI_PYROWAVE_METADATA_FLAG_OPTIONAL : 0),
     };
     if (i == 12) packetizer->reset();
-    const auto reused = packetizer->packetize(frame, request);
+    auto backing = std::make_shared<std::vector<std::uint8_t>>(*frame.bitstream.storage);
+    backing->resize(backing->size() + 257, 0xa5);
+    auto prefixed = frame;
+    prefixed.bitstream.storage = backing;
+    prefixed.payload_size = frame.bitstream.view().size();
+    const auto reused = packetizer->packetize(prefixed, request);
+    std::fill(backing->begin(), backing->end(), 0xcc);  // Next encode may overwrite all input.
     const auto fresh = pyrowave::make_transport_packetizer()->packetize(frame, request);
     ASSERT_EQ(reused.failure, pyrowave::failure_e::none);
     ASSERT_EQ(fresh.failure, pyrowave::failure_e::none);

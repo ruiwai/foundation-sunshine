@@ -48,6 +48,7 @@ namespace pyrowave {
     frame_kind_e kind = frame_kind_e::intra;
     frame_deadline_t deadline {};
     bitstream_buffer_t bitstream {};
+    std::size_t payload_size = 0;  // Zero uses whole backing storage; otherwise a valid prefix.
   };
 
   struct packet_span_t {

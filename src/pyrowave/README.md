@@ -148,6 +148,8 @@ CMake/Ninja 的依赖图跟踪，所有产物位于构建目录，不需要单�
 两端精确校验该版本和必需函数入口，不将上游 1.x 运行库视为本项目运行库的替代品。
 
 编码器采用上游 `encode_cpu` / `encode_gpu` 接口，保留默认 frame context 0 的同步交付。
+Windows GPU 编码器以共享 backing 的有效前缀同步分包，移除编码器整帧复制；分包输出独立持有线上存储，返回后才可覆盖输入。
+这不是端到端零复制，也不构成速度提升声明。
 按 GPU LUID 创建设备时使用普通 `MEDIUM` 队列优先级，不请求提权或实时优先级。
 客户端 GPU HDR 输出精度由 R16 平面格式决定；CPU 输出精度由 buffer format 决定，
 不再扩展 decoder create-info。HLG 的协商扩展和 `SS_HDR_METADATA` 呈现通道保持独立。

@@ -64,9 +64,10 @@ namespace platf::pyrowave_windows {
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
     std::optional<platf::frame_pipeline_trace_t> pipeline_trace,
-    const pyrowave::hdr_frame_metadata_t *dynamic_metadata) noexcept {
+    const pyrowave::hdr_frame_metadata_t *dynamic_metadata,
+    std::size_t payload_size) noexcept {
     transport_publish_result_t result;
-    const auto input_bytes = bitstream ? bitstream->size() : 0u;
+    const auto input_bytes = payload_size != 0 ? payload_size : (bitstream ? bitstream->size() : 0u);
     const auto boundary_overflow = packet_boundary >
       std::numeric_limits<std::size_t>::max() - LI_PYROWAVE_WIRE_FEC_HEADER_SIZE;
     const auto boundary_invalid = packet_boundary == 0 ||
@@ -99,6 +100,7 @@ namespace platf::pyrowave_windows {
           std::chrono::milliseconds(100),
         },
         .bitstream = { std::move(bitstream) },
+        .payload_size = payload_size,
       };
       auto metadata = build_runtime_metadata(frame_timestamp);
       auto metadata_flags = static_cast<std::uint16_t>(metadata.empty() ? 0 : runtime_metadata_flags);
