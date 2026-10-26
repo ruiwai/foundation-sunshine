@@ -88,3 +88,7 @@ Lifecycle is **not complete**: native `321909d` bounds five encoder readback API
 Helper fixture and native build/feature test (1/1) passed; context/device teardown and decoder waits remain unbounded.
 GPU-stall behavior and an end-to-end bound remain unverified.
 Windows run `40378882947` at `8377e82` predates the native pin and remains **PENDING**; it does not validate the new pin.
+
+Host-stage baseline observations/v1: constructor logs ring slots, shared plane images, logical R8 plane bytes (excluding padding/driver allocation, not measured VRAM), and maximum bitstream buffer bytes.
+Existing encoded-frame verbose logs add session identity and integer steady-clock microseconds for native encode call, return-to-checked-release/ring completion, and release-to-readback/packet flatten completion (before transport publication).
+These host phases include CPU waits/work, not GPU-only timestamps or measured performance claims; existing conversion begin/end traces remain unchanged for later matched baselines. Windows compilation/hardware validation remains unverified.

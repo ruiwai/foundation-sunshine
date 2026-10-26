@@ -303,7 +303,11 @@ namespace platf::pyrowave_windows {
                         << ", bits_per_pixel="
                         << pyrowave_frame_bits_per_pixel(initial_frame_budget, width_, height_)
                         << ", target_bitrate=" << bitrate_kbps_ << " Kbps"
-                        << ", budget_fps=" << frame_rate_num_ << '/' << frame_rate_den_;
+                        << ", budget_fps=" << frame_rate_num_ << '/' << frame_rate_den_
+                        << ", plane_ring_slots=" << pyrowave::plane_ring_t::size
+                        << ", shared_plane_images=" << pyrowave::plane_ring_t::size * 3
+                        << ", logical_r8_plane_bytes=" << static_cast<std::uint64_t>(width_) * height_ * 3 * pyrowave::plane_ring_t::size / 2
+                        << ", maximum_bitstream_buffer_bytes=" << maximum_bitstream_size;
         initialized_ = true;
       }
 
@@ -421,11 +425,13 @@ namespace platf::pyrowave_windows {
         const pyrowave_rate_control rate_control {
           .maximum_bitstream_size = frame_budget,
         };
+        const auto host_encode_begin = std::chrono::steady_clock::now();
         const auto encode_result = pyrowave_encoder_encode_gpu(
           encoder_.get(), &acquire, &release, &buffers_[*slot], &rate_control);
         if (encode_result != PYROWAVE_SUCCESS) {
           return encode_failure(frame_number, "pyrowave-gpu-encode", static_cast<int>(encode_result));
         }
+        const auto host_encode_return = std::chrono::steady_clock::now();
         const auto wait_result = pyrowave_sync_object_cpu_wait(sync_.get(), release_value, 1000000000ull);
         if (wait_result != PYROWAVE_SUCCESS) {
           return encode_failure(frame_number, "pyrowave-fence-wait", static_cast<int>(wait_result));
@@ -435,6 +441,7 @@ namespace platf::pyrowave_windows {
         }
         sync_value_ = release_value;
         if (!ring_.finish_encode(*slot)) return encode_failure(frame_number, "plane-ring-release");
+        const auto host_release_checked = std::chrono::steady_clock::now();
 
         const pyrowave::hdr_frame_metadata_t *dynamic_metadata = nullptr;
         if (hdr_producer_.enabled()) {
@@ -505,7 +512,12 @@ namespace platf::pyrowave_windows {
         }
 
         auto storage = std::make_shared<const std::vector<std::uint8_t>>(std::move(encoded));
+        const auto host_packetize_complete = std::chrono::steady_clock::now();
         BOOST_LOG(verbose) << "[PyroWaveEncoder][GPU] encoded frame=" << frame_number
+                            << ", perf_session_id=" << perf_session_id_
+                            << ", host_encode_call_us=" << std::chrono::duration_cast<std::chrono::microseconds>(host_encode_return - host_encode_begin).count()
+                            << ", host_release_wait_us=" << std::chrono::duration_cast<std::chrono::microseconds>(host_release_checked - host_encode_return).count()
+                            << ", host_readback_packetize_us=" << std::chrono::duration_cast<std::chrono::microseconds>(host_packetize_complete - host_release_checked).count()
                             << ", source_packets=" << written_packets
                             << ", encoded_bytes=" << storage->size();
         const auto publish_result = publish_transport_frame(
