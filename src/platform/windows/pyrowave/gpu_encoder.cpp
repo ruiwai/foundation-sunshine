@@ -474,7 +474,7 @@ namespace platf::pyrowave_windows {
           channel_data,
           frame_timestamp,
           std::move(pipeline_trace),
-          nullptr, encoded_size);
+          encoded_size);
         if (!publish_result.success) {
           return encode_failure(
             frame_number,

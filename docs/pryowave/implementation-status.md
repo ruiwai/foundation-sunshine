@@ -139,3 +139,8 @@ Direct-converter-init/v1: fused conversion uses device/context/display-only init
 Static extraction/dependency checks and portable CTest 2/2 passed; Windows compilation/runtime and hardware validation remain pending; no measured speedup claim.
 Unused-plane-SRVs/v1: removed six unused plane shader-resource views; textures, bind flags and UAVs unchanged.
 Windows compilation/runtime checks pending; no measured performance claim.
+
+SDR-transport-shrink/v1: deleted unused HDR/HLG publication branch/API; runtime TLV, bounds, FEC, validation, queue ownership and exceptions preserved.
+Portable build + CTest 2/2 passed; excludes Windows transport and the new loss/reordering test; new Windows validation pending.
+Prior Windows CI `40402894669` at `9420f8a`: full `sunshine.exe` link, 87 unit cases and 3/3 CTest passed.
+That prior run covers neither `81ae` unused SRVs nor this patch; no new Windows/runtime or performance claim.

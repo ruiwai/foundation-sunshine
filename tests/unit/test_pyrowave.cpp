@@ -1157,43 +1157,6 @@ TEST(PyrowaveDynamicHdrTest, DolbySmoothingAdvancesPerEncodedFrameWithoutANewSam
   }
 }
 
-TEST(PyrowaveDynamicHdrTest, CachedSceneMetadataStillTravelsInEveryProtectedFrame) {
-  for (int format = 1; format <= 5; ++format) {
-    SCOPED_TRACE(format);
-    pyrowave::hdr_metadata_producer_t producer;
-    ASSERT_TRUE(producer.configure(format, hdr_source_metadata(), 500));
-    auto mail = std::make_shared<safe::mail_raw_t>();
-    auto packets = mail->queue<video::packet_t>("pyrowave-cached-scene-hdr");
-    for (int frame = 1; frame <= 2; ++frame) {
-      const auto *metadata = producer.build(frame == 1 ? hdr_scene_stats() : platf::hdr_frame_luminance_stats_t {});
-      ASSERT_NE(metadata, nullptr);
-      const auto source = std::make_shared<const std::vector<std::uint8_t>>(2000, 0x63);
-      const auto published = platf::pyrowave_windows::publish_transport_frame(
-        frame, source, 1312, 10, packets, nullptr, std::nullopt, std::nullopt, metadata);
-      ASSERT_TRUE(published.success);
-      auto output = packets->pop();
-      ASSERT_NE(output, nullptr);
-      LI_PYROWAVE_REASSEMBLY_STATE state;
-      LiPyrowaveReassemblyInitialize(&state, 16 * 1024 * 1024);
-      for (std::size_t offset = 0; offset < output->data_size(); offset += 1376) {
-        LiPyrowaveReassemblyPushPacket(&state, output->data() + offset, 1376, 1000, 100000);
-      }
-      ASSERT_TRUE(LiPyrowaveReassemblyIsComplete(&state));
-      std::vector<std::uint8_t> recovered(8 + metadata->payload.size() + (metadata->hlg_nominal_peak_nits ? 10 : 0));
-      std::size_t written = 0;
-      std::uint16_t flags = 0;
-      ASSERT_EQ(LiPyrowaveReassemblyCopyMetadata(&state, recovered.data(), recovered.size(), &written, &flags),
-                LI_PYROWAVE_REASSEMBLY_COMPLETE);
-      EXPECT_EQ(written, recovered.size());
-      EXPECT_EQ(flags, LI_PYROWAVE_METADATA_FLAG_PROTECTED);
-      EXPECT_EQ(recovered[1], metadata->type);
-      EXPECT_EQ(recovered[3], LI_PYROWAVE_METADATA_FLAG_PROTECTED | LI_PYROWAVE_METADATA_FLAG_REQUIRED);
-      EXPECT_TRUE(std::equal(metadata->payload.begin(), metadata->payload.end(), recovered.begin() + 8));
-      LiPyrowaveReassemblyDestroy(&state);
-    }
-  }
-}
-
 TEST(PyrowaveCapabilityTest, RejectsAnUpstreamRuntimeInTheForkContract) {
   auto config = enabled_config();
   auto device = supported_device();
@@ -1207,77 +1170,48 @@ TEST(PyrowaveCapabilityTest, RejectsAnUpstreamRuntimeInTheForkContract) {
   EXPECT_EQ(result.failure, pyrowave::failure_e::api_mismatch);
 }
 
-TEST(PyrowaveTransportTest, PublishesSelectedHdrAndHlgReferenceWithTheSameProtectedFrame) {
-  const auto from_hex = [](std::string_view hex) {
-    std::vector<std::uint8_t> bytes;
-    const auto digit = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
-    for (std::size_t i = 0; i < hex.size(); i += 2) {
-      bytes.push_back(static_cast<std::uint8_t>((digit(hex[i]) << 4) | digit(hex[i + 1])));
-    }
-    return bytes;
-  };
-  for (const auto &fixture : PyrowaveDynamicHdrFixtures) {
-    auto mail = std::make_shared<safe::mail_raw_t>();
-    auto packets = mail->queue<video::packet_t>("pyrowave-test-hdr");
-    const auto source = std::make_shared<const std::vector<std::uint8_t>>(6000, 0x63);
-    const pyrowave::hdr_frame_metadata_t metadata {
-      .type = fixture.type, .hlg_nominal_peak_nits = fixture.hlgNominalPeakNits,
-      .payload = from_hex(fixture.payloadHex),
-    };
-    const auto published = platf::pyrowave_windows::publish_transport_frame(
-      fixture.format, source, 128, 10, packets, nullptr, std::chrono::steady_clock::now(), std::nullopt, &metadata);
-    ASSERT_TRUE(published.success);
-    auto output = packets->pop();
-    ASSERT_NE(output, nullptr);
-    LI_PYROWAVE_REASSEMBLY_STATE state;
-    LiPyrowaveReassemblyInitialize(&state, 16 * 1024 * 1024);
-    // Reverse arrival, no FRAME_HEADER, and a missing first DATA block. The
-    // dynamic TLV must still be recovered from DATA/PARITY, not its header copy.
-    for (std::size_t i = published.blocks; i-- > 0;) {
-      LI_PYROWAVE_PACKET_HEADER header {};
-      const std::uint8_t *payload = nullptr;
-      const auto *packet = output->data() + i * 192;
-      ASSERT_EQ(LiPyrowaveParsePacket(packet, 192, &header, &payload), LI_PYROWAVE_PACKET_OK);
-      if (header.packetKind == LI_PYROWAVE_PACKET_FRAME_HEADER ||
-          (header.packetKind == LI_PYROWAVE_PACKET_DATA && header.blockIndex == 0)) continue;
-      LiPyrowaveReassemblyPushPacket(&state, packet, 192, 5000, 100000);
-    }
-    ASSERT_TRUE(LiPyrowaveReassemblyIsComplete(&state));
-    const auto expected_length = 10 + 8 + metadata.payload.size() + (metadata.hlg_nominal_peak_nits != 0 ? 10 : 0);
-    std::vector<std::uint8_t> recovered(expected_length);
-    std::size_t written = 0;
-    std::uint16_t flags = 0;
-    ASSERT_EQ(LiPyrowaveReassemblyCopyMetadata(&state, recovered.data(), recovered.size(), &written, &flags),
-              LI_PYROWAVE_REASSEMBLY_COMPLETE);
-    EXPECT_EQ(written, expected_length);
-    EXPECT_EQ(flags, LI_PYROWAVE_METADATA_FLAG_PROTECTED | LI_PYROWAVE_METADATA_FLAG_RUNTIME);
-    EXPECT_EQ(recovered[11], metadata.type);
-    EXPECT_EQ(recovered[13], LI_PYROWAVE_METADATA_FLAG_PROTECTED | LI_PYROWAVE_METADATA_FLAG_REQUIRED);
-    EXPECT_TRUE(std::equal(metadata.payload.begin(), metadata.payload.end(), recovered.begin() + 18));
-    if (metadata.hlg_nominal_peak_nits != 0) {
-      EXPECT_EQ(recovered[recovered.size() - 1], 0xe8);
-      EXPECT_EQ(recovered[recovered.size() - 2], 0x03);
-    }
-    std::vector<std::uint8_t> decoded(source->size());
-    ASSERT_EQ(LiPyrowaveReassemblyCopyFrame(&state, decoded.data(), decoded.size(), &written, nullptr),
-              LI_PYROWAVE_REASSEMBLY_COMPLETE);
-    EXPECT_EQ(decoded, *source);
-    LiPyrowaveReassemblyDestroy(&state);
-  }
-}
-
-TEST(PyrowaveTransportTest, RejectsHdrAreaOverflowBeforeQueueing) {
+TEST(PyrowaveTransportTest, RecoversRuntimeMetadataAfterLossAndReordering) {
   auto mail = std::make_shared<safe::mail_raw_t>();
-  auto packets = mail->queue<video::packet_t>("pyrowave-test-hdr-overflow");
-  const pyrowave::hdr_frame_metadata_t metadata {
-    .type = LI_PYROWAVE_METADATA_HDR_VIVID, .hlg_nominal_peak_nits = 1000,
-    .payload = std::vector<std::uint8_t>(LI_PYROWAVE_MAX_METADATA_SIZE - 8u, 0),
-  };
-  const auto result = platf::pyrowave_windows::publish_transport_frame(
-    1, std::make_shared<const std::vector<std::uint8_t>>(100, 1), 1312, 10, packets,
-    nullptr, std::nullopt, std::nullopt, &metadata);
-  EXPECT_FALSE(result.success);
-  EXPECT_FALSE(packets->peek());
+  auto packets = mail->queue<video::packet_t>("pyrowave-test-runtime");
+  const auto source = std::make_shared<const std::vector<std::uint8_t>>(6000, 0x63);
+  const auto published = platf::pyrowave_windows::publish_transport_frame(
+    1, source, 128, 10, packets, nullptr, std::chrono::steady_clock::now(), std::nullopt);
+  ASSERT_TRUE(published.success);
+  auto output = packets->pop();
+  ASSERT_NE(output, nullptr);
+  LI_PYROWAVE_REASSEMBLY_STATE state;
+  LiPyrowaveReassemblyInitialize(&state, 16 * 1024 * 1024);
+  // Reverse arrival, no FRAME_HEADER, and a missing first DATA block. Runtime
+  // metadata must be recovered from DATA/PARITY, not its header copy.
+  for (std::size_t i = published.blocks; i-- > 0;) {
+    LI_PYROWAVE_PACKET_HEADER header {};
+    const std::uint8_t *payload = nullptr;
+    const auto *packet = output->data() + i * 192;
+    ASSERT_EQ(LiPyrowaveParsePacket(packet, 192, &header, &payload), LI_PYROWAVE_PACKET_OK);
+    if (header.packetKind == LI_PYROWAVE_PACKET_FRAME_HEADER ||
+        (header.packetKind == LI_PYROWAVE_PACKET_DATA && header.blockIndex == 0)) continue;
+    LiPyrowaveReassemblyPushPacket(&state, packet, 192, 5000, 100000);
+  }
+  ASSERT_TRUE(LiPyrowaveReassemblyIsComplete(&state));
+  std::vector<std::uint8_t> recovered(10);
+  std::size_t written = 0;
+  std::uint16_t flags = 0;
+  ASSERT_EQ(LiPyrowaveReassemblyCopyMetadata(&state, recovered.data(), recovered.size(), &written, &flags),
+            LI_PYROWAVE_REASSEMBLY_COMPLETE);
+  EXPECT_EQ(written, 10u);
+  constexpr auto expected_flags = LI_PYROWAVE_METADATA_FLAG_PROTECTED |
+    LI_PYROWAVE_METADATA_FLAG_RUNTIME | LI_PYROWAVE_METADATA_FLAG_OPTIONAL;
+  EXPECT_EQ(flags, expected_flags);
+  EXPECT_EQ((recovered[0] << 8) | recovered[1], LI_PYROWAVE_METADATA_HOST_PROCESSING_LATENCY);
+  EXPECT_EQ((recovered[2] << 8) | recovered[3], expected_flags);
+  EXPECT_EQ((std::vector<std::uint8_t>(recovered.begin() + 4, recovered.begin() + 8)),
+            (std::vector<std::uint8_t> { 0, 0, 0, 2 }));
+  std::vector<std::uint8_t> decoded(source->size());
+  ASSERT_EQ(LiPyrowaveReassemblyCopyFrame(&state, decoded.data(), decoded.size(), &written, nullptr),
+            LI_PYROWAVE_REASSEMBLY_COMPLETE);
+  EXPECT_EQ(written, source->size());
+  EXPECT_EQ(decoded, *source);
+  LiPyrowaveReassemblyDestroy(&state);
 }
 
 TEST(PyrowaveTransportTest, PublishesFrameWithProtectedRuntimeMetadata) {
