@@ -114,3 +114,7 @@ Normal/default-false runs are unchanged; the new Windows workflow run remains pe
 Native `af4729c74663642dcaf0ffcef600dfedd3fa73d5` removes 55 dead C decoder wrapper lines; compute/API/true-fragment rejection unchanged.
 Local native build + feature test 1/1 + static review passed.
 No GPU or Windows validation claimed; stale native full-test fragment-success cases remain unrun.
+
+Native `e68a75aebd2a1d185725852d294dc4cf33bef2df`: four unused shader requests removed; embedded SPIR-V 22768 bytes less.
+11 retained compute modules byte-identical + spirv-val passed; reproducible header SHA256 `71dd7f1391cc8a4bb8e3f288afed8f44c308c8e813e3965b452486de14f95c73`.
+Native build/features 1/1 passed; roundtrip investigation waived/test not run; Windows/hardware pending; no speed claim.
