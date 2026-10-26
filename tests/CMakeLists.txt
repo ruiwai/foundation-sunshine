@@ -217,6 +217,10 @@ if (WIN32)
             ${CMAKE_SOURCE_DIR}/src/video_dolby_vision.cpp
             ${CMAKE_SOURCE_DIR}/src/video_hdr_bitstream.cpp
             ${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/transport.cpp)
+    target_sources(pyrowave_unit_tests PRIVATE ${CMAKE_SOURCE_DIR}/tests/unit/platform/windows/test_pyrowave_conversion.cpp)
+    target_link_libraries(pyrowave_unit_tests PRIVATE d3d11 d3dcompiler)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/tests/unit/platform/windows/test_pyrowave_conversion.cpp PROPERTIES
+            COMPILE_DEFINITIONS PYROWAVE_CONVERSION_SHADER_PATH="${CMAKE_SOURCE_DIR}/src_assets/windows/assets/shaders/directx/pyrowave_rgb_to_yuv420_cs.hlsl")
     target_link_libraries(pyrowave_unit_tests PRIVATE Pyrowave::Runtime sunshine::ffmpeg)
     set_target_properties(pyrowave_unit_tests PROPERTIES LINK_SEARCH_START_STATIC 1)
     add_executable(pyrowave_native_features_test
