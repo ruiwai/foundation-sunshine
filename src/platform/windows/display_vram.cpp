@@ -1219,39 +1219,7 @@ namespace platf::dxgi {
     }
 
     int
-    init(
-      std::shared_ptr<platf::display_t> display,
-      adapter_t::pointer adapter_p,
-      pix_fmt_e pix_fmt,
-      ::video::hdr_metadata::formats_t supported_formats,
-      const ::video::config_t &config) {
-      encoder_metadata_formats = supported_formats;
-      switch (pix_fmt) {
-        case pix_fmt_e::nv12:
-          format = DXGI_FORMAT_NV12;
-          break;
-
-        case pix_fmt_e::p010:
-          format = DXGI_FORMAT_P010;
-          break;
-
-        case pix_fmt_e::ayuv:
-          format = DXGI_FORMAT_AYUV;
-          break;
-
-        case pix_fmt_e::yuv444p16:
-          format = DXGI_FORMAT_R16_UINT;
-          break;
-
-        case pix_fmt_e::y410:
-          format = DXGI_FORMAT_Y410;
-          break;
-
-        default:
-          BOOST_LOG(error) << "D3D11 backend doesn't support pixel format: " << from_pix_fmt(pix_fmt);
-          return -1;
-      }
-
+    init_device(std::shared_ptr<platf::display_t> display, adapter_t::pointer adapter_p) {
       D3D_FEATURE_LEVEL featureLevels[] {
         D3D_FEATURE_LEVEL_11_1,
         D3D_FEATURE_LEVEL_11_0,
@@ -1290,6 +1258,51 @@ namespace platf::dxgi {
         BOOST_LOG(warning) << "Failed to increase encoding GPU thread priority. Please run application as administrator for optimal performance.";
       }
 
+      this->display = std::dynamic_pointer_cast<display_base_t>(display);
+      if (!this->display) {
+        return -1;
+      }
+      display = nullptr;
+
+      return 0;
+    }
+
+    int
+    init(
+      std::shared_ptr<platf::display_t> display,
+      adapter_t::pointer adapter_p,
+      pix_fmt_e pix_fmt,
+      ::video::hdr_metadata::formats_t supported_formats,
+      const ::video::config_t &config) {
+      encoder_metadata_formats = supported_formats;
+      switch (pix_fmt) {
+        case pix_fmt_e::nv12:
+          format = DXGI_FORMAT_NV12;
+          break;
+
+        case pix_fmt_e::p010:
+          format = DXGI_FORMAT_P010;
+          break;
+
+        case pix_fmt_e::ayuv:
+          format = DXGI_FORMAT_AYUV;
+          break;
+
+        case pix_fmt_e::yuv444p16:
+          format = DXGI_FORMAT_R16_UINT;
+          break;
+
+        case pix_fmt_e::y410:
+          format = DXGI_FORMAT_Y410;
+          break;
+
+        default:
+          BOOST_LOG(error) << "D3D11 backend doesn't support pixel format: " << from_pix_fmt(pix_fmt);
+          return -1;
+      }
+
+      if (init_device(std::move(display), adapter_p) != 0) return -1;
+
       auto default_color_vectors = ::video::color_vectors_from_colorspace({::video::colorspace_e::rec601, false, 8}, true);
       if (!default_color_vectors) {
         BOOST_LOG(error) << "Missing color vectors for Rec. 601"sv;
@@ -1303,12 +1316,6 @@ namespace platf::dxgi {
       }
       device_ctx->VSSetConstantBuffers(3, 1, &color_matrix);
       device_ctx->PSSetConstantBuffers(0, 1, &color_matrix);
-
-      this->display = std::dynamic_pointer_cast<display_base_t>(display);
-      if (!this->display) {
-        return -1;
-      }
-      display = nullptr;
 
       if (config.pre_encode_filter != pre_encode_filter_e::none) {
         // Only the SDR-to-HDR kind feeds the synthetic-HDR wire, which is
@@ -1381,7 +1388,7 @@ namespace platf::dxgi {
       sampler_desc.MinLOD = 0;
       sampler_desc.MaxLOD = D3D11_FLOAT32_MAX;
 
-      status = device->CreateSamplerState(&sampler_desc, &sampler_linear);
+      auto status = device->CreateSamplerState(&sampler_desc, &sampler_linear);
       if (FAILED(status)) {
         BOOST_LOG(error) << "Failed to create linear sampler state [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
@@ -3097,7 +3104,7 @@ namespace platf::dxgi {
 
       colorspace = ::video::colorspace_from_client_config(config, display->is_hdr());
       video_format = config.videoFormat;
-      if (base_.init(display, display->adapter.get(), pix_fmt_e::nv12, {}, config) != 0) {
+      if (base_.init_device(display, display->adapter.get()) != 0) {
         return false;
       }
       const std::uint32_t range[4] { static_cast<std::uint32_t>(colorspace.full_range), 0, 0, 0 };

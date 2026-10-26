@@ -134,3 +134,6 @@ Default fast focused builds remain unchanged; Windows host-link validation is pe
 Native `f14971c656031ac8a01b8356d6ac467fc131e545`: obsolete fragment test variants replaced with rejection coverage.
 CPU feature test 1/1 and local Vulkan decoder-creation-only validation passed.
 Full suite/roundtrip not run; no target UHD770 or Windows validation claimed.
+
+Direct-converter-init/v1: fused conversion uses device/context/display-only initialization, skipping unused generic color-buffer, sampler, blend, HDR/filter and runtime-status setup.
+Static extraction/dependency checks and portable CTest 2/2 passed; Windows compilation/runtime and hardware validation remain pending; no measured speedup claim.
