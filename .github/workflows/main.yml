@@ -343,6 +343,8 @@ jobs:
               CMakeFiles/sunshine.dir/src/stream.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/gpu_encoder.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/display_vdd_vram.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/display_base.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/display_vdd.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/display_vram.cpp.obj
           else
             ninja -C build

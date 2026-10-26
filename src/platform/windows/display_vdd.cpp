@@ -1400,7 +1400,7 @@ namespace platf::dxgi {
     if (frame_channel_mode != vdd_frame_channel::channel_mode::legacy_named) {
       producer_selection = resolve_sealed_vdd_monitor_index(device.get(), target_w, target_h, 16, producer_discovery_deadline);
       if (producer_selection.match == vdd_frame_channel::producer_match::sole_mismatch) {
-        BOOST_LOG(warning) << "[vdd] sealed producer resolution differs from the selected desktop; requesting DDX fallback"sv;
+        BOOST_LOG(warning) << "[vdd] sealed producer resolution differs from the selected desktop; direct capture initialization rejected"sv;
         return -1;
       }
       if (producer_selection.match == vdd_frame_channel::producer_match::unavailable &&
@@ -1420,7 +1420,7 @@ namespace platf::dxgi {
       producer_selection = resolve_vdd_monitor_index(target_w, target_h, 16, producer_discovery_deadline);
     }
     if (producer_selection.match == vdd_frame_channel::producer_match::sole_mismatch) {
-      BOOST_LOG(warning) << "[vdd] legacy producer resolution differs from the selected desktop; requesting DDX fallback"sv;
+      BOOST_LOG(warning) << "[vdd] legacy producer resolution differs from the selected desktop; direct capture initialization rejected"sv;
       return -1;
     }
     if (producer_selection.match == vdd_frame_channel::producer_match::unavailable) {
@@ -1458,14 +1458,10 @@ namespace platf::dxgi {
     if (auto env_override = vdd_borrowed_texture_env_override()) {
       vdd_borrow_enabled = *env_override;
     }
-    vdd_borrow_cooldown_until = {};
     vdd_borrow_last_telemetry = {};
     vdd_borrow_attempts = 0;
     vdd_borrow_successes = 0;
-    vdd_borrow_fallbacks = 0;
     vdd_borrow_disabled_frames = 0;
-    vdd_borrow_cooldown_frames = 0;
-    vdd_borrow_cooldown_events = 0;
     vdd_borrow_deferred_frames = 0;
     vdd_borrow_returned_deferred_frames = 0;
     vdd_borrow_inflight_frames = std::make_shared<std::atomic<UINT64>>(0);

@@ -35,16 +35,9 @@ namespace platf::dxgi {
     }
     vdd_borrow_last_telemetry = log_now;
 
-    const auto cooldown_ms = log_now < vdd_borrow_cooldown_until ?
-                               std::chrono::duration_cast<std::chrono::milliseconds>(vdd_borrow_cooldown_until - log_now).count() :
-                               0LL;
     BOOST_LOG(debug) << "[vdd] borrowed texture stats: attempts="sv << vdd_borrow_attempts
                      << " successes="sv << vdd_borrow_successes
-                     << " fallbacks="sv << vdd_borrow_fallbacks
                      << " disabled_frames="sv << vdd_borrow_disabled_frames
-                     << " cooldown_frames="sv << vdd_borrow_cooldown_frames
-                     << " cooldown_events="sv << vdd_borrow_cooldown_events
-                     << " cooldown_ms="sv << cooldown_ms
                      << " producer_frame="sv << dup.frame_counter()
                      << " slot="sv << dup.producer_slot_index() << "/"sv << dup.producer_slot_count()
                      << " dirty_rects="sv << dup.last_dirty_rect_count()

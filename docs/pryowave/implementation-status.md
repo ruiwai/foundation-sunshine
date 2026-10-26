@@ -123,3 +123,6 @@ Borrow-only VDD shrink/v1 removes the VDD snapshot copy path and cursor composit
 Disabled borrowing or visible cursor without existing local-mode activation fails strictly; activation does not prove cursor delivery; global capture fallbacks remain.
 Prior replacement Windows WARP/source-lease coverage at `d272d2e` is not a snapshot runtime pass.
 Windows build and end-to-end VDD/runtime cursor validation of this change remain pending.
+Fallback-chain shrink/v1: explicit VDD no longer retries DDX; PyroWave initialization no longer retries RAM capture.
+Other codec/capture selectors, generic initial capture policy and encoder-probe override remain unchanged.
+Windows compilation/runtime validation of this shrink remains pending.

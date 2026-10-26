@@ -1868,21 +1868,6 @@ namespace video {
       }
       reset_display(display, system_capture ? platf::mem_type_e::system : encoder.platform_formats->dev_type,
         name, capture_config);
-#ifdef _WIN32
-      if (!display && !system_capture &&
-          client_config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) &&
-          client_config.dynamicRange == 0 &&
-          client_config.pre_encode_filter == platf::pre_encode_filter_e::none) {
-        {
-          auto lock = capture_policy.lock();
-          if (!capture_policy->request_system_capture()) {
-            return;
-          }
-        }
-        capture_config.capture_backend_override = "ddx";
-        reset_display(display, platf::mem_type_e::system, name, capture_config);
-      }
-#endif
     };
 
     // Get all the monitor names now, rather than at boot, to

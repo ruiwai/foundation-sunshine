@@ -1302,9 +1302,8 @@ namespace platf {
       try_types = { "ddx" };
     }
     else if (capture_backend == "vdd") {
-      // Direct VDD capture is preferred, but DDX remains a safe last resort
-      // when the producer cannot represent the selected desktop mode.
-      try_types = { "vdd", "ddx" };
+      // An explicit VDD selection must fail closed.
+      try_types = { "vdd" };
     }
     else {
       try_types = { capture_backend };
@@ -1345,7 +1344,7 @@ namespace platf {
       }
 
       if (type == "vdd") {
-        BOOST_LOG(warning) << "[vdd] direct capture initialization failed; trying DDX capture for the selected VDD output"sv;
+        BOOST_LOG(warning) << "[vdd] direct capture initialization failed"sv;
       }
     }
 
