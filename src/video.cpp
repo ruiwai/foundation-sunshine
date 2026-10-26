@@ -1830,7 +1830,7 @@ namespace video {
     safe::signal_t &reinit_event,
     std::atomic_bool &force_system_capture,
     sync_util::sync_t<pyrowave::capture_policy_t> &capture_policy,
-    const encoder_t &encoder) {
+    const encoder_t *encoder) {
     std::vector<capture_ctx_t> capture_ctxs;
 
     auto fg = util::fail_guard([&]() {
@@ -1853,6 +1853,11 @@ namespace video {
     if (!initial_capture_ctx) {
       return;
     }
+    const bool is_pyrowave = initial_capture_ctx->config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT);
+    if (!is_pyrowave && !encoder) {
+      return;
+    }
+    const auto capture_memory_type = is_pyrowave ? platf::mem_type_e::dxgi : encoder->platform_formats->dev_type;
     capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
 
     auto reset_capture_display = [&](std::shared_ptr<platf::display_t> &display,
@@ -1866,7 +1871,7 @@ namespace video {
       if (system_capture) {
         capture_config.capture_backend_override = "ddx";
       }
-      reset_display(display, system_capture ? platf::mem_type_e::system : encoder.platform_formats->dev_type,
+      reset_display(display, system_capture ? platf::mem_type_e::system : capture_memory_type,
         name, capture_config);
     };
 
@@ -1874,7 +1879,7 @@ namespace video {
     // get the most up-to-date list available monitors
     std::vector<std::string> display_names;
     int display_p = -1;
-    refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+    refresh_displays(capture_memory_type, display_names, display_p);
 
     // Use client-specified display_name if provided, otherwise use the selected display
     std::string target_display_name;
@@ -2145,7 +2150,7 @@ namespace video {
             disp.reset();
 
             // Refresh display names since a display removal might have caused the reinitialization
-            refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+            refresh_displays(capture_memory_type, display_names, display_p);
 
             // Process any pending display switch with the new list of displays
             bool user_switched = false;
@@ -3500,13 +3505,13 @@ namespace video {
     std::shared_ptr<platf::display_t> disp,
     std::unique_ptr<platf::encode_device_t> encode_device,
     safe::signal_t &reinit_event,
-    const encoder_t &encoder,
+    const encoder_t *encoder,
     void *channel_data,
     std::optional<safe::mail_raw_t::event_t<dynamic_param_t>> dynamic_param_events,
     std::function<std::unique_ptr<encode_session_t>()> session_factory = {},
     std::function<void()> backend_failure_handler = {}) {
     auto session = session_factory ? session_factory() :
-      make_encode_session(disp.get(), encoder, config, disp->width, disp->height, std::move(encode_device));
+      (encoder ? make_encode_session(disp.get(), *encoder, config, disp->width, disp->height, std::move(encode_device)) : nullptr);
     if (!session) {
       if (backend_failure_handler) {
         BOOST_LOG(warning) << "Encoder session could not be initialized; requesting backend recovery"sv;
@@ -3535,7 +3540,7 @@ namespace video {
     // streaming to continue without requiring a full restart of Sunshine.
     // PyroWave teardown stays in owner scope rather than inheriting legacy detachment.
     auto fail_guard = util::fail_guard([&encoder, &session, &config] {
-      if (config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) && (encoder.flags & ASYNC_TEARDOWN)) {
+      if (config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) && encoder && (encoder->flags & ASYNC_TEARDOWN)) {
         std::thread encoder_teardown_thread { [session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
           session.reset();
@@ -4257,6 +4262,10 @@ namespace video {
       return;
     }
 
+    if (config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) && !ref->encoder_p) {
+      return;
+    }
+
     const bool accepts_system_capture = config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) &&
       ref->encoder_p->platform_formats->dev_type == platf::mem_type_e::system;
     {
@@ -4415,7 +4424,7 @@ namespace video {
         }
       }
 
-      auto &encoder = *chosen_encoder;
+      const auto *encoder = is_pyrowave ? nullptr : ref->encoder_p;
       std::unique_ptr<platf::encode_device_t> encode_device;
       std::function<std::unique_ptr<encode_session_t>()> session_factory;
       std::function<void()> backend_failure_handler;
@@ -4497,7 +4506,7 @@ namespace video {
       }
       else {
         strip_unusable_pre_encode_filter(*display, config);
-        encode_device = make_encode_device(*display, encoder, config);
+        encode_device = make_encode_device(*display, *encoder, config);
         if (!encode_device) {
           return;
         }
@@ -4534,7 +4543,7 @@ namespace video {
         mail, images,
         config, display,
         std::move(encode_device),
-        ref->reinit_event, *ref->encoder_p,
+        ref->reinit_event, encoder,
         channel_data, dynamic_param_events,
         std::move(session_factory), std::move(backend_failure_handler));
     }
@@ -5344,7 +5353,7 @@ namespace video {
       std::ref(capture_thread_ctx.reinit_event),
       std::ref(capture_thread_ctx.force_system_capture),
       std::ref(capture_thread_ctx.capture_policy),
-      std::ref(*capture_thread_ctx.encoder_p)
+      capture_thread_ctx.encoder_p
     };
 
     return 0;

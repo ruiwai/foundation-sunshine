@@ -146,3 +146,7 @@ Prior Windows CI `40402894669` at `9420f8a`: full `sunshine.exe` link, 87 unit c
 That prior run covers neither `81ae` unused SRVs nor this patch; no new Windows/runtime or performance claim.
 PyroWave teardown stays in owner scope instead of inheriting legacy asynchronous detachment.
 Driver-destroy blocking is not resolved; Windows compilation/runtime validation remains pending.
+
+Descriptor-decouple/v1: PyroWave runtime selects dedicated DXGI capture and accepts a null legacy descriptor.
+Global encoder probe and mux decoupling remain pending.
+Static/portable checks only (portable excludes video.cpp); Windows full compilation/link pending; no hardware claim.
