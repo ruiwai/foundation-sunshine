@@ -65,3 +65,10 @@ UHD770 quality/performance measurements or hardware soak is claimed here.
 | Idle | [video.cpp](../../src/video.cpp) has VRR/cached-plane refresh paths; dedicated event-driven policy and paired-client acceptance pending. |
 
 All hardware gates remain deferred in the [hardware checklist](hardware-validation.md).
+
+## Restricted-adapter preflight/v1
+
+GPU-only DXGI Intel/UHD770 exact-identity preflight now precedes conversion planes
+and native allocation. Identity is not feature/format/sync support; native and LUID
+checks remain. CPU fallback routing is unchanged; removal remains pending replacement
+Windows tests. Windows compilation of this gate is pending.

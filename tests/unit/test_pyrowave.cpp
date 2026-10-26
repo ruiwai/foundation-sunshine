@@ -151,6 +151,20 @@ TEST(PyrowaveApi, RejectsInvalidContextsWithoutAccessingADevice) {
 }
 #endif
 
+TEST(PyrowaveGpuInteropTest, PrivateAdapterRequiresExactIntelUhd770Identity) {
+  EXPECT_TRUE(pyrowave::is_private_adapter(0x8086, L"Intel(R) UHD Graphics 770"));
+  EXPECT_TRUE(pyrowave::is_private_adapter(0x8086, L"Intel UHD Graphics 770"));
+  for (const auto vendor : { 0u, 0x10deu, 0x1002u }) {
+    EXPECT_FALSE(pyrowave::is_private_adapter(vendor, L"Intel(R) UHD Graphics 770"));
+    EXPECT_FALSE(pyrowave::is_private_adapter(vendor, L"Intel UHD Graphics 770"));
+  }
+  for (const auto name : { L"Intel(R) UHD Graphics 730", L"", L"Intel(R) UHD Graphics",
+                          L"UHD Graphics 770", L"Intel(R) UHD Graphics 770 extra",
+                          L"Intel UHD Graphics 770 extra" }) {
+    EXPECT_FALSE(pyrowave::is_private_adapter(0x8086, name));
+  }
+}
+
 TEST(PyrowavePlaneRingTest, AlternatesAndRefreshesOnlyAfterRelease) {
   pyrowave::plane_ring_t ring;
   EXPECT_TRUE(ring.valid());

@@ -11,6 +11,7 @@
 #include "../display_vram_internal.h"
 #include "src/config.h"
 #include "src/pyrowave/encode_guard.h"
+#include "src/pyrowave/gpu_interop.h"
 #include "src/pyrowave/plane_ring.h"
 #include "src/pyrowave/packetizer.h"
 #include "src/pyrowave/dynamic_hdr.h"
@@ -106,8 +107,7 @@ namespace platf::pyrowave_windows {
           frame_rate_den_ { frame_rate_den },
           bitrate_kbps_ {
             video::cap_initial_encoder_bitrate(config.bitrate, ::config::video.max_bitrate, 0)
-          },
-           conversion_ { dxgi::make_shared_yuv_encode_device(display, config) } {
+          } {
         if (packet_boundary == 0 || packet_boundary > LI_PYROWAVE_MAX_PACKET_SIZE ||
             packet_boundary <= LI_PYROWAVE_WIRE_FEC_HEADER_SIZE) {
           init_failure(
@@ -119,15 +119,25 @@ namespace platf::pyrowave_windows {
         if (!display || config.width <= 0 || config.height <= 0 ||
             (config.width & 1) != 0 || (config.height & 1) != 0 ||
             config.width > 8192 || config.height > 8192 ||
-            frame_rate_num <= 0 || frame_rate_den <= 0 ||
-            !conversion_) {
-          init_failure("invalid dimensions, frame rate, display or conversion device");
+            frame_rate_num <= 0 || frame_rate_den <= 0) {
+          init_failure("invalid dimensions, frame rate or display");
           return;
         }
 
         DXGI_ADAPTER_DESC1 adapter_desc {};
         if (!display->adapter || FAILED(display->adapter->GetDesc1(&adapter_desc))) {
           init_failure("DXGI adapter description");
+          return;
+        }
+
+        if (!pyrowave::is_private_adapter(adapter_desc.VendorId, adapter_desc.Description)) {
+          init_failure("unsupported adapter: Intel UHD770 identity required");
+          return;
+        }
+
+        conversion_ = dxgi::make_shared_yuv_encode_device(display, config);
+        if (!conversion_) {
+          init_failure("conversion device initialization");
           return;
         }
 

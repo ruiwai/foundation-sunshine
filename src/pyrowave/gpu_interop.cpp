@@ -33,6 +33,12 @@ namespace pyrowave {
   }  // namespace
 
   bool
+  is_private_adapter(const std::uint32_t vendor_id, const std::wstring_view description) noexcept {
+    return vendor_id == 0x8086 &&
+           (description == L"Intel(R) UHD Graphics 770" || description == L"Intel UHD Graphics 770");
+  }
+
+  bool
   validate(const gpu_frame_t &frame) noexcept {
     return valid_format(frame.format) && frame.width != 0 && frame.width <= 16384 && frame.height != 0 &&
            frame.height <= 16384 && frame.opaque_image != nullptr &&

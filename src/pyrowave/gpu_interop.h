@@ -11,8 +11,12 @@
 
 #include <array>
 #include <cstdint>
+#include <string_view>
 
 namespace pyrowave {
+
+  [[nodiscard]] bool
+  is_private_adapter(std::uint32_t vendor_id, std::wstring_view description) noexcept;
 
   enum class image_format_e : std::uint8_t {
     bgra8_unorm,
