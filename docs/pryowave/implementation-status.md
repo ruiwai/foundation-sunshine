@@ -110,3 +110,7 @@ Packetized output transfers its full wire vector to transport without a full-wir
 This removes neither encoded-bitstream readback nor other network copies; it is not an end-to-end zero-copy or speed claim.
 Focused Windows CI skips only unrelated Web UI/Node.js and DualSense sidecar/.NET steps.
 Normal/default-false runs are unchanged; the new Windows workflow run remains pending.
+
+Native `af4729c74663642dcaf0ffcef600dfedd3fa73d5` removes 55 dead C decoder wrapper lines; compute/API/true-fragment rejection unchanged.
+Local native build + feature test 1/1 + static review passed.
+No GPU or Windows validation claimed; stale native full-test fragment-success cases remain unrun.
