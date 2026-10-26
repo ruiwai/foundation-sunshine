@@ -1125,6 +1125,15 @@ namespace video {
     bool force_idr = false;
   };
 
+  bool is_borrowed_pyrowave_session(const encode_session_t &session) {
+#ifdef _WIN32
+    return platf::pyrowave_windows::is_gpu_encoder_session(session);
+#else
+    (void) session;
+    return false;
+#endif
+  }
+
   struct sync_session_ctx_t {
     safe::signal_t *join_event;
     safe::mail_raw_t::event_t<bool> shutdown_event;
@@ -1141,6 +1150,7 @@ namespace video {
   struct sync_session_t {
     sync_session_ctx_t *ctx;
     std::unique_ptr<encode_session_t> session;
+    bool frame_ready = true;
   };
 
   using encode_session_ctx_queue_t = safe::queue_t<sync_session_ctx_t>;
@@ -3646,8 +3656,10 @@ namespace video {
 
     const auto avcodec_session = dynamic_cast<avcodec_encode_session_t *>(session.get());
     const bool needs_bitrate_rebuild = avcodec_session && !avcodec_session->supports_bitrate_update();
+    const bool direct = is_borrowed_pyrowave_session(*session);
+    bool frame_ready = !direct;
     std::shared_ptr<platf::img_t> current_img;
-    {
+    if (!direct) {
       // Load a dummy image into the AVFrame to ensure we have something to encode
       // even if we timeout waiting on the first frame. Only backends requiring
       // bitrate rebuilds retain the image to prepare a replacement encoder.
@@ -3668,9 +3680,9 @@ namespace video {
       // b) Sunshine is quitting
       // c) The capture side is waiting to reinit and we've encoded at least one frame
       //
-      // If we have to reinit before we have received any captured frames, we will encode
-      // the blank dummy frame just to let Moonlight know that we're alive.
-      if (shutdown_event->peek() || !images->running() || (reinit_event.peek() && frame_nr > 1)) {
+      // Non-borrowed sessions encode a blank dummy frame before reinit to let
+      // Moonlight know we're alive; borrowed sessions may reinit without a frame.
+      if (shutdown_event->peek() || !images->running() || (reinit_event.peek() && (frame_nr > 1 || !frame_ready))) {
         break;
       }
 
@@ -3740,8 +3752,9 @@ namespace video {
 
       // Encode at a minimum FPS to avoid image quality issues with static content
       // When variable_refresh_rate is enabled, only encode when we have a new frame
-      if (!requested_idr_frame || images->peek()) {
-        if (auto frame = pop_image_interruptible(effective_frame_time, input_activity_boost_policy.useful && !input_boost_active)) {
+      if (!frame_ready || !requested_idr_frame || images->peek()) {
+        // A direct replay's producer texture is already returned; refresh cached planes instead.
+        if (auto frame = pop_image_interruptible(effective_frame_time, input_activity_boost_policy.useful && !input_boost_active); frame && (!direct || !frame->is_replay)) {
           auto &img = frame->image;
           replayed_frame = frame->is_replay;
           if (!frame->is_replay) {
@@ -3761,6 +3774,7 @@ namespace video {
             break;
           }
           if (needs_bitrate_rebuild) current_img = img;
+          frame_ready = true;
           if (pipeline_trace) {
             pipeline_trace->convert_end = std::chrono::steady_clock::now();
           }
@@ -3775,7 +3789,7 @@ namespace video {
         if (backend_failure_handler) backend_failure_handler();
         break;
       }
-      if (shutdown_event->peek() || (reinit_event.peek() && frame_nr > 1)) break;
+      if (shutdown_event->peek() || (reinit_event.peek() && (frame_nr > 1 || !frame_ready))) break;
 
       consume_input_activity();
       input_boost_active = input_activity_boost_policy.useful && std::chrono::steady_clock::now() < input_boost_until;
@@ -3797,6 +3811,7 @@ namespace video {
         // If minimum_fps_target is set or boost is active, we'll encode anyway to maintain minimum FPS.
       }
 
+      if (!frame_ready) continue;
       std::optional<encoder_rebuild_context_t> rebuild_context;
       if (current_img) rebuild_context.emplace(*disp, encoder, config, *current_img);
       if (encode(frame_nr++, session, packets, channel_data, frame_timestamp, std::move(pipeline_trace), rebuild_context ? &*rebuild_context : nullptr)) {
@@ -3854,6 +3869,8 @@ namespace video {
    */
   void
   strip_unusable_pre_encode_filter(platf::display_t &disp, config_t &config) {
+    // Preserve PyroWave requests so the strict wrapper rejects unsupported processing.
+    if (config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT)) return;
     if (config.pre_encode_filter == platf::pre_encode_filter_e::none) {
       return;
     }
@@ -3983,7 +4000,8 @@ namespace video {
     ctx.hdr_events->raise(std::move(hdr_info));
 
     // Load the initial image to prepare for encoding
-    if (session->convert(img)) {
+    encode_session.frame_ready = !is_borrowed_pyrowave_session(*session);
+    if (encode_session.frame_ready && session->convert(img)) {
       BOOST_LOG(error) << "Could not convert initial image"sv;
       return std::nullopt;
     }
@@ -4135,7 +4153,7 @@ namespace video {
 
           std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
           std::optional<platf::frame_pipeline_trace_t> pipeline_trace;
-          if (img) {
+          if (img && (frame_captured || !is_borrowed_pyrowave_session(*pos->session))) {
             frame_timestamp = img->frame_timestamp;
           }
 
@@ -4159,8 +4177,13 @@ namespace video {
 
           if (frame_captured) {
             pipeline_trace->convert_end = std::chrono::steady_clock::now();
+            pos->frame_ready = true;
           }
 
+          if (!pos->frame_ready) {
+            ++pos;
+            continue;
+          }
           std::optional<encoder_rebuild_context_t> rebuild_context;
           if (img) rebuild_context.emplace(*disp, encoder, ctx->config, *img);
           if (encode(ctx->frame_nr++, pos->session, ctx->packets, ctx->channel_data, frame_timestamp, std::move(pipeline_trace), rebuild_context ? &*rebuild_context : nullptr)) {

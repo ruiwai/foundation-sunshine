@@ -41,9 +41,9 @@ The user waived further investigation of this error; it remains a known failure.
 
 ## Remaining integration and validation
 
-The production converter still uses the intermediate NV12/split path; the
-fused shader is not routed yet. Dedicated borrowed-capture lifecycle, broader
-capability checks, compatibility deletion and event-driven idle remain pending.
+Production now routes fused conversion into shared R8 planes and rejects
+non-borrowed/unsupported sources; Windows validation of this routing is pending.
+Capture lifecycle, compatibility deletion and event-driven idle remain pending.
 Unreachable native fragment-renderer cleanup remains pending too.
 No full Sunshine link, Windows GPU interop runtime, paired-client decode,
 UHD770 quality/performance measurements or hardware soak is claimed here.

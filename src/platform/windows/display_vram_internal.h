@@ -20,10 +20,10 @@ namespace platf::dxgi {
   };
 
   /**
-   * D3D11 YUV output owned by the existing conversion/filter pipeline.
+   * Direct SDR R8 Y/U/V planes owned by the two-slot conversion ring.
    *
-   * PyroWave consumes this interface without duplicating Sunshine's HDR,
-   * rotation, scaling, cursor, or optional enhancement shaders.
+   * PyroWave accepts only same-adapter borrowed VDD SDR frames without
+   * rotation, scaling or enhancement; plane release remains fence-ordered.
    */
   class shared_yuv_encode_device_t: public platf::encode_device_t {
   public:
@@ -31,7 +31,7 @@ namespace platf::dxgi {
     virtual ID3D11DeviceContext *d3d_context() noexcept = 0;
     virtual const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept = 0;
     virtual bool select_plane_slot(std::size_t slot) noexcept = 0;
-    // Poll without blocking and retain the latest completed scene sample.
+    // SDR-only: clear invalid HDR statistics and return false.
     virtual bool collect_hdr_luminance_stats() = 0;
   };
 

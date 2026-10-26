@@ -31,6 +31,7 @@ extern "C" {
 #include "pre_encode_filter.h"
 #include "src/config.h"
 #include "src/logging.h"
+#include "src/pyrowave/signal_contract.h"
 #include "src/nvenc/win/nvenc_dynamic_factory.h"
 #include "src/amf/amf_d3d11.h"
 #include "src/video.h"
@@ -249,7 +250,7 @@ namespace platf::dxgi {
   blob_t convert_yuv420_p010_cs_hybrid_log_gamma_scaled_hdr_analysis_hlsl;
   blob_t convert_yuv420_nv12_cs_passthrough_scaled_hlsl;
   blob_t convert_yuv420_nv12_cs_linear_scaled_hlsl;
-  blob_t pyrowave_split_yuv_cs_hlsl;
+  blob_t pyrowave_rgb_to_yuv420_cs_hlsl;
 
   blob_t
   compile_shader(
@@ -386,6 +387,47 @@ namespace platf::dxgi {
     bool
     hdr_luminance_analysis_available() const {
       return hdr_analysis_enabled;
+    }
+
+    int
+    convert_direct(img_d3d_t &img, ID3D11ComputeShader *shader, ID3D11Buffer *range,
+      std::array<ID3D11UnorderedAccessView *, 3> outputs, UINT width, UINT height) {
+      for (auto it = img_ctx_map.begin(); it != img_ctx_map.end();) {
+        if (it->second.img_weak.expired()) it = img_ctx_map.erase(it);
+        else ++it;
+      }
+      auto &ctx = img_ctx_map[img.id];
+      if (initialize_image_context(img, ctx)) return -1;
+      const auto status = ctx.encoder_mutex->AcquireSync(img.encoder_acquire_key, 16);
+      if (status != S_OK) {
+        BOOST_LOG(error) << "PyroWave direct source acquire failed: " << util::log_hex(status);
+        return -1;
+      }
+      auto cleanup = [&]() {
+        ID3D11ShaderResourceView *null_srv = nullptr;
+        ID3D11UnorderedAccessView *null_uavs[] = { nullptr, nullptr, nullptr };
+        ID3D11Buffer *null_cb = nullptr;
+        device_ctx->CSSetShaderResources(0, 1, &null_srv);
+        device_ctx->CSSetUnorderedAccessViews(0, 3, null_uavs, nullptr);
+        device_ctx->CSSetConstantBuffers(0, 1, &null_cb);
+        device_ctx->CSSetShader(nullptr, nullptr, 0);
+        device_ctx->Flush();
+      };
+      auto guard = util::fail_guard([&]() {
+        cleanup();
+        img.release_borrowed_vdd_after_convert(ctx.encoder_mutex.get());
+      });
+      auto *source = ctx.encoder_input_res.get();
+      device_ctx->CSSetShader(shader, nullptr, 0);
+      device_ctx->CSSetShaderResources(0, 1, &source);
+      device_ctx->CSSetUnorderedAccessViews(0, 3, outputs.data(), nullptr);
+      device_ctx->CSSetConstantBuffers(0, 1, &range);
+      device_ctx->Dispatch((width / 2 + 7) / 8, (height / 2 + 7) / 8, 1);
+      cleanup();
+      guard.disable();
+      // Keyed-mutex handoff, not Flush or CPU return, orders queued GPU reads
+      // before producer acquisition. Return the borrowed source exactly once.
+      return img.release_borrowed_vdd_after_convert(ctx.encoder_mutex.get()) ? 0 : -1;
     }
 
     int
@@ -3030,60 +3072,36 @@ namespace platf::dxgi {
 
     bool
     init(std::shared_ptr<display_base_t> display, const ::video::config_t &config) {
-      if (!display || config.width <= 0 || config.height <= 0 ||
-          (config.width & 1) != 0 || (config.height & 1) != 0) {
+      if (const auto reason = pyrowave::validate_sdr_signal(config.width, config.height,
+            config.dynamicRange, config.chromaSamplingType, config.encoderCscMode)) {
+        BOOST_LOG(error) << "PyroWave direct conversion: " << reason;
+        return false;
+      }
+      if (!display || config.dynamic_hdr_format != 0 ||
+          config.pre_encode_filter != pre_encode_filter_e::none || config.enhancement_backend ||
+          display->is_hdr() || display->width != config.width || display->height != config.height ||
+          (display->display_rotation != DXGI_MODE_ROTATION_IDENTITY &&
+           display->display_rotation != DXGI_MODE_ROTATION_UNSPECIFIED)) {
+        BOOST_LOG(error) << "PyroWave requires SDR, no HDR metadata/enhancement/filter, equal display/output sizes and no rotation";
+        return false;
+      }
+      adapter_luid_ = display->capture_adapter_luid;
+      generation_ = display->capture_source_generation;
+      if (!adapter_luid_ || !generation_) {
+        BOOST_LOG(error) << "PyroWave requires a known nonzero VDD capture adapter LUID and source generation at initialization";
         return false;
       }
 
       colorspace = ::video::colorspace_from_client_config(config, display->is_hdr());
       video_format = config.videoFormat;
-      const bool hdr_output = colorspace.bit_depth == 10;
-      const auto pixel_format = hdr_output ? pix_fmt_e::p010 : pix_fmt_e::nv12;
-      const auto output_format = hdr_output ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
-      const auto plane_format = hdr_output ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM;
-
-      const bool dynamic_metadata = config.dynamic_hdr_format != 0;
-      if (base_.init(display, display->adapter.get(), pixel_format,
-            { .hdr10plus = dynamic_metadata, .vivid = dynamic_metadata }, config) != 0) {
+      if (base_.init(display, display->adapter.get(), pix_fmt_e::nv12, {}, config) != 0) {
         return false;
       }
-
-      D3D11_TEXTURE2D_DESC desc {};
-      desc.Width = static_cast<UINT>(config.width);
-      desc.Height = static_cast<UINT>(config.height);
-      desc.MipLevels = 1;
-      desc.ArraySize = 1;
-      desc.Format = output_format;
-      desc.SampleDesc.Count = 1;
-      desc.Usage = D3D11_USAGE_DEFAULT;
-      // The local conversion target is not exported. It still needs RTV/SRV
-      // bindings for Sunshine's existing pixel/compute conversion path; the
-      // separately exported R8/R16 planes below are the cross-API boundary.
-      desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-      desc.MiscFlags = 0;
-      if (FAILED(base_.device->CreateTexture2D(&desc, nullptr, &conversion_output_))) {
-        return false;
-      }
-
-      D3D11_SHADER_RESOURCE_VIEW_DESC y_view_desc {};
-      y_view_desc.Format = hdr_output ? DXGI_FORMAT_R16_UNORM : DXGI_FORMAT_R8_UNORM;
-      y_view_desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-      y_view_desc.Texture2D.MipLevels = 1;
-      D3D11_SHADER_RESOURCE_VIEW_DESC uv_view_desc = y_view_desc;
-      uv_view_desc.Format = hdr_output ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R8G8_UNORM;
-      if (FAILED(base_.device->CreateShaderResourceView(
-            conversion_output_.get(), &y_view_desc, &conversion_y_srv_)) ||
-          FAILED(base_.device->CreateShaderResourceView(
-            conversion_output_.get(), &uv_view_desc, &conversion_uv_srv_))) {
-        return false;
-      }
-
-      if (!pyrowave_split_yuv_cs_hlsl) {
-        return false;
-      }
-      if (FAILED(base_.device->CreateComputeShader(
-            pyrowave_split_yuv_cs_hlsl->GetBufferPointer(),
-            pyrowave_split_yuv_cs_hlsl->GetBufferSize(), nullptr, &split_shader_))) {
+      const std::uint32_t range[4] { static_cast<std::uint32_t>(colorspace.full_range), 0, 0, 0 };
+      range_cb_ = make_buffer(base_.device.get(), range);
+      if (!range_cb_ || !pyrowave_rgb_to_yuv420_cs_hlsl || FAILED(base_.device->CreateComputeShader(
+            pyrowave_rgb_to_yuv420_cs_hlsl->GetBufferPointer(),
+            pyrowave_rgb_to_yuv420_cs_hlsl->GetBufferSize(), nullptr, &fused_shader_))) {
         return false;
       }
 
@@ -3095,7 +3113,7 @@ namespace platf::dxgi {
         plane_desc.Height = static_cast<UINT>(chroma ? config.height / 2 : config.height);
         plane_desc.MipLevels = 1;
         plane_desc.ArraySize = 1;
-        plane_desc.Format = plane_format;
+        plane_desc.Format = DXGI_FORMAT_R8_UNORM;
         plane_desc.SampleDesc.Count = 1;
         plane_desc.Usage = D3D11_USAGE_DEFAULT;
         plane_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
@@ -3121,47 +3139,33 @@ namespace platf::dxgi {
         }
         planes_[slot][index].width = static_cast<std::uint32_t>(plane_desc.Width);
         planes_[slot][index].height = static_cast<std::uint32_t>(plane_desc.Height);
-        planes_[slot][index].ten_bit = hdr_output;
+        planes_[slot][index].ten_bit = false;
       }
       }
 
-      base_.apply_colorspace(colorspace);
-      if (base_.init_output(conversion_output_.get(), config.width, config.height, colorspace, video_format) != 0) {
-        return false;
-      }
-      if (dynamic_metadata && !base_.hdr_luminance_analysis_available()) {
-        BOOST_LOG(warning) << "PyroWave dynamic HDR requires the HDR luminance analyzer";
-        return false;
-      }
       return true;
     }
 
     int
     convert(platf::img_t &image) override {
-      const auto result = base_.convert(image);
-      hdr_luminance_stats = base_.hdr_luminance_stats_out;
-      if (result != 0) {
-        return result;
+      auto &img = static_cast<img_d3d_t &>(image);
+      const auto &frame = img.frame_desc;
+      D3D11_TEXTURE2D_DESC desc {};
+      if (img.capture_texture) img.capture_texture->GetDesc(&desc);
+      const auto &plane = planes_[selected_slot_][0];
+      if (img.blank || img.dummy || !img.borrowed_vdd_texture || !img.borrowed_vdd_frame ||
+          img.linear_gamma || !frame.borrowed || frame.adapter_luid != adapter_luid_ ||
+          frame.source_generation != generation_ || frame.encoding != pixel_encoding_class_e::unorm8 ||
+          frame.domain != frame_domain_e::sdr_rec709 || img.encoder_acquire_key != 2 || img.producer_release_key != 0 ||
+          desc.Width != plane.width || desc.Height != plane.height || desc.SampleDesc.Count != 1 ||
+          desc.ArraySize != 1 || desc.MipLevels != 1 ||
+          (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM && desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM)) {
+        BOOST_LOG(error) << "PyroWave requires a fresh borrowed VDD SDR UNORM8 frame, matching adapter/generation/size, single sample/array/mip and keys 2->0";
+        return -1;
       }
-
-      ID3D11ShaderResourceView *inputs[] = { conversion_y_srv_.get(), conversion_uv_srv_.get() };
-      ID3D11UnorderedAccessView *outputs[] = {
-        plane_uavs_[selected_slot_][0].get(), plane_uavs_[selected_slot_][1].get(), plane_uavs_[selected_slot_][2].get() };
-      ID3D11RenderTargetView *null_rtvs[] = { nullptr, nullptr };
-      base_.device_ctx->OMSetRenderTargets(2, null_rtvs, nullptr);
-      base_.device_ctx->CSSetShader(split_shader_.get(), nullptr, 0);
-      base_.device_ctx->CSSetShaderResources(0, 2, inputs);
-      base_.device_ctx->CSSetUnorderedAccessViews(0, 3, outputs, nullptr);
-      base_.device_ctx->Dispatch(
-        (planes_[selected_slot_][0].width + 15u) / 16u,
-        (planes_[selected_slot_][0].height + 15u) / 16u,
-        1);
-      ID3D11ShaderResourceView *null_inputs[] = { nullptr, nullptr };
-      ID3D11UnorderedAccessView *null_outputs[] = { nullptr, nullptr, nullptr };
-      base_.device_ctx->CSSetShaderResources(0, 2, null_inputs);
-      base_.device_ctx->CSSetUnorderedAccessViews(0, 3, null_outputs, nullptr);
-      base_.device_ctx->CSSetShader(nullptr, nullptr, 0);
-      return 0;
+      return base_.convert_direct(img, fused_shader_.get(), range_cb_.get(),
+        { plane_uavs_[selected_slot_][0].get(), plane_uavs_[selected_slot_][1].get(), plane_uavs_[selected_slot_][2].get() },
+        plane.width, plane.height);
     }
 
     ID3D11Device *d3d_device() noexcept override { return base_.device.get(); }
@@ -3174,18 +3178,15 @@ namespace platf::dxgi {
     }
 
     bool collect_hdr_luminance_stats() override {
-      base_.read_hdr_analysis_results();
-      hdr_luminance_stats = base_.hdr_luminance_stats_out;
-      // A pending readback does not invalidate the previous scene sample.
-      return hdr_luminance_stats.valid;
+      hdr_luminance_stats = {};
+      return false;
     }
 
   private:
     d3d_base_encode_device base_;
-    texture2d_t conversion_output_;
-    shader_res_t conversion_y_srv_;
-    shader_res_t conversion_uv_srv_;
-    cs_t split_shader_;
+    cs_t fused_shader_;
+    buf_t range_cb_;
+    std::uint64_t adapter_luid_ = 0, generation_ = 0;
     std::array<std::array<texture2d_t, 3>, 2> plane_textures_;
     std::array<std::array<shader_res_t, 3>, 2> plane_srvs_;
     std::array<std::array<uav_t, 3>, 2> plane_uavs_;
@@ -4817,10 +4818,10 @@ namespace platf::dxgi {
     }
     convert_yuv420_nv12_cs_linear_scaled_hlsl = compile_compute_shader(
       SUNSHINE_SHADERS_DIR "/convert_yuv420_nv12_cs_linear_scaled.hlsl");
-    pyrowave_split_yuv_cs_hlsl = compile_compute_shader(
-      SUNSHINE_SHADERS_DIR "/pyrowave_split_yuv_cs.hlsl");
-    if (!pyrowave_split_yuv_cs_hlsl) {
-      BOOST_LOG(warning) << "Failed to compile PyroWave shared-plane split shader"sv;
+    pyrowave_rgb_to_yuv420_cs_hlsl = compile_compute_shader(
+      SUNSHINE_SHADERS_DIR "/pyrowave_rgb_to_yuv420_cs.hlsl");
+    if (!pyrowave_rgb_to_yuv420_cs_hlsl) {
+      BOOST_LOG(warning) << "Failed to compile PyroWave direct SDR RGB-to-YUV420 shader"sv;
     }
     if (!convert_yuv420_nv12_cs_linear_scaled_hlsl) {
       BOOST_LOG(warning) << "Failed to compile NV12 linear scaled compute shader, SDR scaled fast path disabled";
