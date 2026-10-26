@@ -16,6 +16,10 @@ on:
       - master
   workflow_dispatch:
     inputs:
+      pyrowave_tests_only:
+        description: 'Focused PyroWave tests plus encoder compile check, no packaging'
+        type: boolean
+        default: false
       gui_run_id:
         description: 'Optional successful Panel artifact run; its commit must match the Panel submodule'
         type: string
@@ -323,16 +327,30 @@ jobs:
       - name: Build Windows
         shell: msys2 {0}
         env:
+          PYROWAVE_TESTS_ONLY: ${{ inputs.pyrowave_tests_only || false }}
           CCACHE_DIR: ${{ github.workspace }}\.ccache
           CCACHE_MAXSIZE: 2G
           CCACHE_COMPILERCHECK: content
         run: |
-          ninja -C build
+          if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
+            ninja -C build pyrowave_unit_tests pyrowave_packetizer_probe \
+              CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/cpu_encoder.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/gpu_encoder.cpp.obj
+          else
+            ninja -C build
+          fi
           ccache --show-stats
 
       - name: Run native tests
         shell: msys2 {0}
-        run: ctest --test-dir build --output-on-failure
+        env:
+          PYROWAVE_TESTS_ONLY: ${{ inputs.pyrowave_tests_only || false }}
+        run: |
+          if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
+            ctest --test-dir build --output-on-failure --no-tests=error -R '^pyrowave_(unit_tests|packetizer_probe)$'
+          else
+            ctest --test-dir build --output-on-failure
+          fi
 
       - name: Save compiler cache
         # Only master writes (always(): a failed or cancelled build still
@@ -386,6 +404,7 @@ jobs:
           Write-Output "Pruned $(@($stale).Count) stale ccache entries; kept $current"
 
       - name: Cache Inno Setup
+        if: ${{ !inputs.pyrowave_tests_only }}
         id: inno-cache
         uses: actions/cache@v6
         with:
@@ -393,7 +412,7 @@ jobs:
           key: inno-setup-6
 
       - name: Install Inno Setup
-        if: steps.inno-cache.outputs.cache-hit != 'true'
+        if: ${{ !inputs.pyrowave_tests_only && steps.inno-cache.outputs.cache-hit != 'true' }}
         shell: pwsh
         run: |
           # Download and install Inno Setup 6 (silent install)
@@ -403,11 +422,13 @@ jobs:
           Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -Wait
 
       - name: Add Inno Setup to PATH
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: pwsh
         run: |
           echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
 
       - name: Package Windows
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: msys2 {0}
         env:
           RTX_VIDEO_ADAPTER_BUILT: ${{ steps.configure_windows.outputs.rtx_hdr }}
@@ -488,6 +509,7 @@ jobs:
           cp ./ds5-sidecar-package.json ../artifacts/Sunshine.Ds5Sidecar.manifest.json
 
       - name: Rename release assets
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: msys2 {0}
         run: |
           # Format tag to vYEAR.DATE where DATE is zero-padded to 4 digits
@@ -519,12 +541,14 @@ jobs:
           done
 
       - name: Generate Checksums
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: pwsh
         run: |
           # Generate SHA256 checksums from the final release asset names.
           .\scripts\generate-checksums.ps1 -Path .\artifacts -Output "SHA256SUMS.txt"
 
       - name: Upload Artifacts
+        if: ${{ !inputs.pyrowave_tests_only }}
         uses: actions/upload-artifact@v7
         with:
           name: sunshine-windows-r${{ github.run_number }}
@@ -538,7 +562,7 @@ jobs:
           if-no-files-found: error
 
       - name: Create/Update GitHub Release
-        if: needs.setup_release.outputs.publish_release == 'true'
+        if: ${{ !inputs.pyrowave_tests_only && needs.setup_release.outputs.publish_release == 'true' }}
         uses: LizardByte/create-release-action@v2025.426.1549
         with:
           allowUpdates: true
