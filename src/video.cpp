@@ -40,6 +40,7 @@ extern "C" {
 #include "amf/amf_encoder.h"
 #include "platform/common.h"
 #include "pyrowave/capture_policy.h"
+#include "pyrowave/signal_contract.h"
 #include "sync.h"
 #include "video.h"
 #include "video_dolby_vision.h"
@@ -4270,13 +4271,12 @@ namespace video {
       return;
     }
 
-    const bool accepts_system_capture = ref->encoder_p->platform_formats->dev_type == platf::mem_type_e::system ||
-      (config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) &&
-       config.dynamicRange == 0 && config.pre_encode_filter == platf::pre_encode_filter_e::none);
+    const bool accepts_system_capture = config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) &&
+      ref->encoder_p->platform_formats->dev_type == platf::mem_type_e::system;
     {
       auto lock = ref->capture_policy.lock();
       if (!ref->capture_policy->attach(accepts_system_capture)) {
-        BOOST_LOG(error) << "Cannot attach a GPU encoder while shared capture is serving a PyroWave CPU fallback"sv;
+        BOOST_LOG(error) << "Shared capture policy rejects this encoder's capture memory requirements"sv;
         return;
       }
     }
@@ -4346,7 +4346,13 @@ namespace video {
       };
 
       // Initialize cached display dimensions on first iteration
-      if (last_display_width == 0 && last_display_height == 0) {
+      if (is_pyrowave) {
+        if (const auto reason = pyrowave::validate_capture_size(config.width, config.height, current_width, current_height)) {
+          BOOST_LOG(error) << reason;
+          return;
+        }
+      }
+      else if (last_display_width == 0 && last_display_height == 0) {
         last_display_width = current_width;
         last_display_height = current_height;
 

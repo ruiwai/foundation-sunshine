@@ -3,6 +3,11 @@
 Implementation-first work is authorized; hardware acceptance remains deferred.
 Client wire fields and protocol versions remain unchanged.
 
+Fixed-capture contract/v1 preserves the negotiated even size without alignment,
+rotation, scaling or resolution-change events; capture-size changes fail closed.
+PyroWave does not admit RAM capture through shared capture policy.
+Portable size-predicate coverage only; Windows compilation/runtime pending.
+
 ## Delivered slices
 
 - Sunshine branch: `pyrowave/uhd770-private`.
@@ -93,3 +98,6 @@ It predates this CPU deletion, native `321909d` and new host-stage stats; their 
 Host-stage baseline observations/v1: constructor logs ring slots, shared plane images, logical R8 plane bytes (excluding padding/driver allocation, not measured VRAM), and maximum bitstream buffer bytes.
 Existing encoded-frame verbose logs add session identity and integer steady-clock microseconds for native encode call, return-to-checked-release/ring completion, and release-to-readback/packet flatten completion (before transport publication).
 These host phases include CPU waits/work, not GPU-only timestamps or measured performance claims; existing conversion begin/end traces remain unchanged for later matched baselines. Windows compilation/hardware validation remains unverified.
+
+SDR backend dead HDR work removed; existing rejection guards and SDR wire unchanged.
+Windows compilation/runtime not yet verified; no speedup claim.

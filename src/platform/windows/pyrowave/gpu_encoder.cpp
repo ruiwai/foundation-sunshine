@@ -14,7 +14,6 @@
 #include "src/pyrowave/gpu_interop.h"
 #include "src/pyrowave/plane_ring.h"
 #include "src/pyrowave/packetizer.h"
-#include "src/pyrowave/dynamic_hdr.h"
 #include "src/streaming/perf_recorder.h"
 #include "src/utility.h"
 #include "transport.h"
@@ -281,20 +280,6 @@ namespace platf::pyrowave_windows {
           return;
         }
 
-        if (config.dynamic_hdr_format != 0) {
-          SS_HDR_METADATA source_metadata {};
-          if (!video::get_effective_hdr_metadata(display.get(), config, source_metadata)) source_metadata = {};
-          const auto target_peak = video::hdr_metadata::resolve_target_display_luminance(
-            config.hdr_capabilities.reported, config.hdr_capabilities.max_nits,
-            source_metadata.maxDisplayLuminance);
-          if (!hdr_producer_.configure(config.dynamic_hdr_format, source_metadata, target_peak)) {
-            init_failure("dynamic HDR metadata producer");
-            return;
-          }
-          BOOST_LOG(info) << "[PyroWaveEncoder][GPU] dynamic HDR metadata enabled: format="
-                          << config.dynamic_hdr_format << ", target_peak_nits=" << target_peak;
-        }
-
         bitstream_.resize(maximum_bitstream_size);
         const auto initial_frame_budget = pyrowave_frame_budget(
           bitrate_kbps_, frame_rate_num_, frame_rate_den_);
@@ -443,38 +428,6 @@ namespace platf::pyrowave_windows {
         if (!ring_.finish_encode(*slot)) return encode_failure(frame_number, "plane-ring-release");
         const auto host_release_checked = std::chrono::steady_clock::now();
 
-        const pyrowave::hdr_frame_metadata_t *dynamic_metadata = nullptr;
-        if (hdr_producer_.enabled()) {
-          // Analysis is asynchronous, like HEVC. Every delivered frame still
-          // gets a payload built from the latest valid scene state.
-          const bool statistics_ready = conversion_->collect_hdr_luminance_stats();
-          dynamic_metadata = hdr_producer_.build(conversion_->hdr_luminance_stats);
-          if (dynamic_metadata == nullptr) {
-            if (hdr_metadata_started_) {
-              return encode_failure(frame_number, "dynamic-hdr-metadata-generation");
-            }
-            const auto now = std::chrono::steady_clock::now();
-            if (!hdr_startup_deadline_) {
-              hdr_startup_deadline_ = now + std::chrono::milliseconds(1500);
-              BOOST_LOG(debug) << "[PyroWaveEncoder][GPU] waiting for the first valid dynamic HDR scene sample"
-                               << ", stage=" << (statistics_ready ? "invalid-metadata-payload" : "statistics-unavailable")
-                               << ", frame=" << frame_number << ", sample=" << conversion_->hdr_luminance_stats.sample_sequence;
-            }
-            if (now < *hdr_startup_deadline_) {
-              // Intentional startup deferral, after fence completion and ring release.
-              fail_guard.disable();
-              return 0;
-            }
-            return encode_failure(frame_number, "dynamic-hdr-startup-analysis-timeout");
-          }
-          if (!hdr_metadata_started_) {
-            BOOST_LOG(debug) << "[PyroWaveEncoder][GPU] dynamic HDR scene metadata ready"
-                             << ", frame=" << frame_number << ", sample=" << conversion_->hdr_luminance_stats.sample_sequence;
-          }
-          hdr_metadata_started_ = true;
-          hdr_startup_deadline_.reset();
-        }
-
         std::size_t packet_count = 0;
         const auto count_result = pyrowave_encoder_compute_num_packets(
           encoder_.get(), packet_boundary_, &packet_count);
@@ -529,7 +482,7 @@ namespace platf::pyrowave_windows {
           channel_data,
           frame_timestamp,
           std::move(pipeline_trace),
-          dynamic_metadata);
+          nullptr);
         if (!publish_result.success) {
           return encode_failure(
             frame_number,
@@ -657,9 +610,6 @@ namespace platf::pyrowave_windows {
       bool fence_return_verified_ = false;
       std::vector<pyrowave_packet> source_packets_;
       std::vector<std::uint8_t> bitstream_;
-      pyrowave::hdr_metadata_producer_t hdr_producer_;
-      std::optional<std::chrono::steady_clock::time_point> hdr_startup_deadline_;
-      bool hdr_metadata_started_ = false;
     };
   }  // namespace
 

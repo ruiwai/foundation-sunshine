@@ -331,6 +331,22 @@ TEST(PyrowaveSignalContractTest, AcceptsSdrBt709LimitedAndFullAtEvenResolutions)
   }
 }
 
+TEST(PyrowaveSignalContractTest, RequiresFixedEqualCaptureSizeWithoutAlignment) {
+  static_assert(noexcept(pyrowave::validate_capture_size(32, 30, 32, 30)));
+  static_assert(pyrowave::validate_capture_size(32, 30, 32, 30) == nullptr);
+  EXPECT_EQ(pyrowave::validate_capture_size(1920, 1080, 1920, 1080), nullptr);
+  EXPECT_EQ(pyrowave::validate_capture_size(32, 30, 32, 30), nullptr);
+  EXPECT_NE(pyrowave::validate_capture_size(1920, 1080, 1080, 1920), nullptr);
+  EXPECT_NE(pyrowave::validate_capture_size(1920, 1080, 1920, 1200), nullptr);
+  EXPECT_NE(pyrowave::validate_capture_size(1920, 1080, 1280, 720), nullptr);
+  EXPECT_NE(pyrowave::validate_capture_size(1920, 1080, 0, 1080), nullptr);
+  EXPECT_NE(pyrowave::validate_capture_size(1920, 1080, 1920, 0), nullptr);
+  for (const auto dimension : { 0, -2, 31 }) {
+    EXPECT_NE(pyrowave::validate_capture_size(dimension, 30, dimension, 30), nullptr);
+    EXPECT_NE(pyrowave::validate_capture_size(32, dimension, 32, dimension), nullptr);
+  }
+}
+
 TEST(PyrowaveSignalContractTest, RejectsNonpositiveOrOddDimensions) {
   for (const auto dimension : { 0, -1, -2, 1, 1919, std::numeric_limits<int>::min() }) {
     EXPECT_NE(pyrowave::validate_sdr_signal(dimension, 1080, 0, 0, 2), nullptr) << dimension;
