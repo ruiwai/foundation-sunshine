@@ -48,3 +48,19 @@ Unreachable native fragment-renderer cleanup remains pending too.
 No full Sunshine link, Windows GPU interop runtime, paired-client decode,
 UHD770 quality/performance measurements or hardware soak is claimed here.
 - Native FP16 storage preflight + diagnostics: static review PASS; Linux build and feature test 1/1 PASS. Latest completed Windows CI remains `40356085453` (3/3 focused tests), not this publication head.
+
+## Current requirement evidence (not hardware acceptance)
+
+- Native `a1235e1`, host preflight pin `c39913a`; production fusion/startup `1ca36e8`.
+- WARP borrowed-source test `6c482b8`: Windows **NOT RUN**. Production CI `40365767443` still in progress, last checked at `Build Windows`; no full Sunshine link/runtime claim.
+
+| Requirement | Code / tests; remaining evidence |
+| --- | --- |
+| Preflight | [native feature guards](../../third-party/pyrowave/pyrowave_features.hpp), [feature test](../../third-party/pyrowave/pyrowave_features_test.cpp); real Windows imports pending. |
+| Admission | [video_admission_t](../../src/pyrowave/video_admission.h), [PyrowaveVideoAdmissionTest](../../tests/unit/test_pyrowave.cpp); hardware lifecycle pending. |
+| Pipeline | [convert_direct](../../src/platform/windows/display_vram.cpp), [gpu_encoder.cpp](../../src/platform/windows/pyrowave/gpu_encoder.cpp); [WarpBorrowedSourceHandoffPreservesConvertedPlanes](../../tests/unit/platform/windows/test_pyrowave_conversion.cpp) pending Windows run. |
+| FP16 | [pyrowave_common.cpp](../../third-party/pyrowave/pyrowave_common.cpp) feature rejection and wavelet policy; known numerical failure above remains unaccepted. |
+| Simplification | [video.cpp](../../src/video.cpp) still has shared-capture/fallback orchestration; compatibility deletion pending, not proven by fused routing. |
+| Idle | [video.cpp](../../src/video.cpp) has VRR/cached-plane refresh paths; dedicated event-driven policy and paired-client acceptance pending. |
+
+All hardware gates remain deferred in the [hardware checklist](hardware-validation.md).
