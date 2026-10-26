@@ -165,6 +165,19 @@ TEST(PyrowaveGpuInteropTest, PrivateAdapterRequiresExactIntelUhd770Identity) {
   }
 }
 
+TEST(PyrowaveGpuInteropTest, ValidatesFenceCompletionWithoutAcceptingDeviceRemoval) {
+  constexpr auto max = std::numeric_limits<std::uint64_t>::max();
+  EXPECT_FALSE(pyrowave::is_fence_completion_valid(4, 5));
+  EXPECT_TRUE(pyrowave::is_fence_completion_valid(5, 5));
+  EXPECT_TRUE(pyrowave::is_fence_completion_valid(6, 5));
+  EXPECT_TRUE(pyrowave::is_fence_completion_valid(0, 0));
+  EXPECT_FALSE(pyrowave::is_fence_completion_valid(0, 1));
+  EXPECT_FALSE(pyrowave::is_fence_completion_valid(max, 0));
+  EXPECT_FALSE(pyrowave::is_fence_completion_valid(max, 5));
+  EXPECT_FALSE(pyrowave::is_fence_completion_valid(max, max));
+  EXPECT_TRUE(pyrowave::is_fence_completion_valid(max - 1, max - 1));
+}
+
 TEST(PyrowavePlaneRingTest, AlternatesAndRefreshesOnlyAfterRelease) {
   pyrowave::plane_ring_t ring;
   EXPECT_TRUE(ring.valid());

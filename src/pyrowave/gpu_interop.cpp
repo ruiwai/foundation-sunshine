@@ -6,6 +6,11 @@
 
 namespace pyrowave {
 
+  bool
+  is_fence_completion_valid(const std::uint64_t completed, const std::uint64_t required) noexcept {
+    return completed != UINT64_MAX && completed >= required;
+  }
+
   namespace {
 
     [[nodiscard]] bool

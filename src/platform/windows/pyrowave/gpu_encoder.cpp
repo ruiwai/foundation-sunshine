@@ -430,7 +430,7 @@ namespace platf::pyrowave_windows {
         if (wait_result != PYROWAVE_SUCCESS) {
           return encode_failure(frame_number, "pyrowave-fence-wait", static_cast<int>(wait_result));
         }
-        if (!fence_return_verified_ && !verify_fence_return(release_value)) {
+        if (!verify_fence_return(release_value)) {
           return encode_failure(frame_number, "vulkan-to-d3d11-fence-probe");
         }
         sync_value_ = release_value;
@@ -556,7 +556,7 @@ namespace platf::pyrowave_windows {
 
       bool
       verify_fence_return(std::uint64_t value) {
-        // Check the first normal GPU release before publishing a video frame;
+        // Check every GPU release before releasing its ring slot or publishing a frame;
         // do not require an additional, unused host-signal path to work.
         constexpr DWORD timeout_ms = 1000;
         if (fence_->GetCompletedValue() < value) {
@@ -580,12 +580,14 @@ namespace platf::pyrowave_windows {
           }
         }
         const auto completed_value = fence_->GetCompletedValue();
-        if (completed_value == UINT64_MAX || completed_value < value) {
+        if (!pyrowave::is_fence_completion_valid(completed_value, value)) {
           init_failure("Vulkan-to-D3D11 fence probe value");
           return false;
         }
-        fence_return_verified_ = true;
-        BOOST_LOG(debug) << "[PyroWaveEncoder][GPU] shared fence verified in both directions";
+        if (!fence_return_verified_) {
+          fence_return_verified_ = true;
+          BOOST_LOG(debug) << "[PyroWaveEncoder][GPU] shared fence verified in both directions";
+        }
         return true;
       }
 

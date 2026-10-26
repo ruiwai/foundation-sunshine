@@ -16,6 +16,9 @@
 namespace pyrowave {
 
   [[nodiscard]] bool
+  is_fence_completion_valid(std::uint64_t completed, std::uint64_t required) noexcept;
+
+  [[nodiscard]] bool
   is_private_adapter(std::uint32_t vendor_id, std::wstring_view description) noexcept;
 
   enum class image_format_e : std::uint8_t {

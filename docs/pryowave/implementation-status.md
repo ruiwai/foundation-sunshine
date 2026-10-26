@@ -76,3 +76,8 @@ GPU-only DXGI Intel/UHD770 exact-identity preflight now precedes conversion plan
 and native allocation. Identity is not feature/format/sync support; native and LUID
 checks remain. CPU fallback routing is unchanged; removal remains pending replacement
 Windows tests. Windows compilation of this gate is pending.
+
+Per-frame release verification/v1 checks D3D completion after each successful Vulkan
+CPU wait, before ring release; failures retain ring poisoning and the 1000 ms event wait.
+Portable coverage tests only the completion predicate; Windows compilation/runtime pending.
+Lifecycle is **not complete**: native packetization/context teardown still contains infinite fence/device-idle waits.
