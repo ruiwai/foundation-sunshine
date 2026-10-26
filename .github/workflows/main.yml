@@ -333,7 +333,7 @@ jobs:
           CCACHE_COMPILERCHECK: content
         run: |
           if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
-            ninja -C build pyrowave_unit_tests pyrowave_packetizer_probe \
+            ninja -C build pyrowave_unit_tests pyrowave_packetizer_probe pyrowave_native_features_test \
               CMakeFiles/sunshine.dir/src/rtsp.cpp.obj \
               CMakeFiles/sunshine.dir/src/stream.cpp.obj \
               CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/cpu_encoder.cpp.obj \
@@ -349,7 +349,7 @@ jobs:
           PYROWAVE_TESTS_ONLY: ${{ inputs.pyrowave_tests_only || false }}
         run: |
           if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
-            ctest --test-dir build --output-on-failure --no-tests=error -R '^pyrowave_(unit_tests|packetizer_probe)$'
+            ctest --test-dir build --output-on-failure --no-tests=error -R '^pyrowave_(unit_tests|packetizer_probe|native_features_test)$'
           else
             ctest --test-dir build --output-on-failure
           fi

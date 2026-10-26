@@ -219,6 +219,12 @@ if (WIN32)
             ${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/transport.cpp)
     target_link_libraries(pyrowave_unit_tests PRIVATE Pyrowave::Runtime sunshine::ffmpeg)
     set_target_properties(pyrowave_unit_tests PROPERTIES LINK_SEARCH_START_STATIC 1)
+    add_executable(pyrowave_native_features_test
+            ${CMAKE_SOURCE_DIR}/third-party/pyrowave/pyrowave_features_test.cpp)
+    target_link_libraries(pyrowave_native_features_test PRIVATE Pyrowave::Runtime granite-volk-headers)
+    set_target_properties(pyrowave_native_features_test PROPERTIES LINK_SEARCH_START_STATIC 1 CXX_STANDARD 17)
+    add_test(NAME pyrowave_native_features_test COMMAND pyrowave_native_features_test)
+    set_tests_properties(pyrowave_native_features_test PROPERTIES TIMEOUT 30)
 endif ()
 add_test(NAME pyrowave_unit_tests COMMAND pyrowave_unit_tests)
 
