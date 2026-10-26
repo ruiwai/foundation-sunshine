@@ -213,6 +213,7 @@ jobs:
           echo "  GCC: $(gcc --version | head -1)"
 
       - name: Setup Node.js
+        if: ${{ !inputs.pyrowave_tests_only }}
         uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
@@ -220,17 +221,20 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Setup .NET for DualSense sidecar
+        if: ${{ !inputs.pyrowave_tests_only }}
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
       - name: Build self-contained DualSense sidecar
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: pwsh
         env:
           RELEASE_TAG: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
         run: .\scripts\build-ds5-sidecar.ps1 -ReleaseTag $env:RELEASE_TAG
 
       - name: Build Web UI
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: pwsh
         run: |
           npm ci
