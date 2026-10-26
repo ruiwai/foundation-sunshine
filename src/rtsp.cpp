@@ -1216,9 +1216,13 @@ namespace rtsp_stream {
       if (config::input.clipboard_sync && clipboard_bridge::bridge_t::instance().gui_alive()) {
         caps |= platf::platform_caps::clipboard_text | platf::platform_caps::clipboard_image;
       }
+#ifdef _WIN32
+      caps &= ~static_cast<uint32_t>(platf::platform_caps::cursor_shape);
+#else
       if (cursor_channel::producer_available()) {
         caps |= platf::platform_caps::cursor_shape;
       }
+#endif
       if (text_context::bridge_t::instance().gui_alive()) {
         caps |= platf::platform_caps::remote_text_context;
       }
@@ -1719,6 +1723,11 @@ namespace rtsp_stream {
       }
       if (pyrowave::is_experimental_video_format(static_cast<std::uint32_t>(monitor.videoFormat))) {
         const auto is_full_range = (monitor.encoderCscMode & 0x1) != 0;
+        if (const auto reason = pyrowave::validate_cursor_policy(display_cursor, false)) {
+          BOOST_LOG(warning) << "Rejecting experimental PyroWave video format: "sv << reason;
+          respond(sock, session, &option, 415, "UNSUPPORTED MEDIA TYPE", req->sequenceNumber, {});
+          return;
+        }
         if (const auto reason = pyrowave::validate_sdr_signal(monitor.width, monitor.height,
               monitor.dynamicRange, monitor.chromaSamplingType, monitor.encoderCscMode)) {
           BOOST_LOG(warning) << "Rejecting experimental PyroWave video format: "sv << reason;

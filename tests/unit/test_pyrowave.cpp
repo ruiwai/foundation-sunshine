@@ -43,6 +43,18 @@ extern "C" {
 
 namespace {
 
+  TEST(PyrowaveCursorPolicyTest, RequiresExplicitHiddenCursor) {
+    static_assert(noexcept(pyrowave::validate_cursor_policy(false, false)));
+    static_assert(pyrowave::validate_cursor_policy(false, false) == nullptr);
+    static_assert(pyrowave::validate_cursor_policy(true, false) != nullptr);
+    static_assert(pyrowave::validate_cursor_policy(false, true) != nullptr);
+    static_assert(pyrowave::validate_cursor_policy(true, true) != nullptr);
+    EXPECT_EQ(pyrowave::validate_cursor_policy(false, false), nullptr);
+    EXPECT_NE(pyrowave::validate_cursor_policy(true, false), nullptr);
+    EXPECT_NE(pyrowave::validate_cursor_policy(false, true), nullptr);
+    EXPECT_NE(pyrowave::validate_cursor_policy(true, true), nullptr);
+  }
+
   TEST(PyrowaveRuntimeTest, AdvertisesOnlyPrivateSdrCapabilities) {
     const auto flags = pyrowave::server_capability_flags();
     EXPECT_EQ(flags, LI_PYROWAVE_CAPABILITY_REASSEMBLY |

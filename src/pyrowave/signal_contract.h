@@ -7,6 +7,12 @@
 #include <string_view>
 
 namespace pyrowave {
+  constexpr const char *validate_cursor_policy(bool visible, bool local_mode) noexcept {
+    if (visible || local_mode)
+      return "PyroWave requires capture_cursor=false and local cursor disabled until paired-client cursor support is verified";
+    return nullptr;
+  }
+
   constexpr const char *validate_capture_backend(bool dxgi, std::string_view backend) noexcept {
     if (!dxgi)
       return "PyroWave requires DXGI capture; select a DXGI hardware device";

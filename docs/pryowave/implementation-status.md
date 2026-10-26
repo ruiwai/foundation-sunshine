@@ -164,3 +164,7 @@ Private-advertisements/v1: private SDR capabilities only; Windows legacy codec a
 Portable checks cover the capability getter; Windows advertisement compilation and client discovery interoperability remain unverified/pending.
 Descriptor-rebuild/v1: Windows CI `40417574788` failed compilation on a missed rebuild descriptor reference.
 Pointer-to-reference correction is available; Windows compilation/link verification remains pending, not passed.
+
+Private-hidden-cursor/v1 requires capture_cursor=false and local cursor disabled; PyroWave enable requests and Windows cursor advertisement are disabled.
+Paired-client cursor verification is deferred; legacy input is unaffected.
+Portable policy coverage only; Windows compilation/runtime validation remains pending.

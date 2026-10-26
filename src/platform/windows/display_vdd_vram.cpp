@@ -12,6 +12,7 @@
 
 #include "src/config.h"
 #include "src/logging.h"
+#include "src/pyrowave/signal_contract.h"
 
 namespace platf::dxgi {
   using namespace std::literals;
@@ -71,9 +72,8 @@ namespace platf::dxgi {
       vdd_local_cursor_mode_active = use_local_cursor;
     }
 
-    if (cursor_visible && !use_local_cursor) {
-      BOOST_LOG(error) << "[vdd] borrowed-only capture does not support cursor compositing; "sv
-                         "use explicit cursor-hidden capture or already-enabled client-local cursor mode"sv;
+    if (const auto reason = pyrowave::validate_cursor_policy(cursor_visible, use_local_cursor)) {
+      BOOST_LOG(error) << "[vdd] "sv << reason;
       return capture_e::error;
     }
 

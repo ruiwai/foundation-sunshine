@@ -1289,6 +1289,7 @@ namespace platf {
     const auto capture_backend = config.capture_backend_override.empty() ? config::video.capture : config.capture_backend_override;
 
     if (pyrowave::is_experimental_video_format(config.videoFormat)) {
+      cursor_channel::set_producer_available(false);
       if (const auto reason = pyrowave::validate_capture_backend(hwdevice_type == mem_type_e::dxgi, capture_backend)) {
         BOOST_LOG(error) << reason;
         return nullptr;

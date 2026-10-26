@@ -2189,6 +2189,10 @@ namespace stream {
       }
 
       const bool enable = requested_mode == 1;
+      if (enable && session->config.monitor.videoFormat == LI_PYROWAVE_VIDEO_FORMAT) {
+        BOOST_LOG(warning) << "Ignoring unsupported PyroWave local cursor enable: paired-client cursor support is unverified"sv;
+        return;
+      }
       if (enable && session->config.controlProtocolType != 13) {
         BOOST_LOG(warning) << "Ignoring local cursor mode on an unencrypted control stream"sv;
         return;
