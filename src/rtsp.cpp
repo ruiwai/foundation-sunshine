@@ -1720,10 +1720,10 @@ namespace rtsp_stream {
                         << ", chroma=" << (monitor.chromaSamplingType == 0 ? "4:2:0"sv : "4:4:4"sv)
                         << ", encoderCscMode=" << monitor.encoderCscMode;
       }
-      if (pyrowave::is_experimental_video_format(static_cast<std::uint32_t>(monitor.videoFormat)) &&
-          (!pyrowave::is_server_video_format_available(static_cast<std::uint32_t>(monitor.videoFormat)) ||
+      if (!pyrowave::is_server_video_format_available(static_cast<std::uint32_t>(monitor.videoFormat)) ||
+          (pyrowave::is_experimental_video_format(static_cast<std::uint32_t>(monitor.videoFormat)) &&
            !pyrowave::is_server_runtime_available())) {
-        BOOST_LOG(warning) << "Rejecting experimental PyroWave video format: server encoder is not available"sv;
+        BOOST_LOG(warning) << "Rejecting unavailable video format: server encoder is not available"sv;
         respond(sock, session, &option, 415, "UNSUPPORTED MEDIA TYPE", req->sequenceNumber, {});
         return;
       }

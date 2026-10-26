@@ -1622,10 +1622,16 @@ TEST(PyrowaveRuntimeTest, ExposesFormatOnlyOnSupportedServerPlatform) {
   EXPECT_TRUE(pyrowave::is_experimental_video_format(LI_PYROWAVE_VIDEO_FORMAT));
 #ifdef _WIN32
   EXPECT_TRUE(pyrowave::is_server_video_format_available(LI_PYROWAVE_VIDEO_FORMAT));
-  EXPECT_FALSE(pyrowave::is_server_video_format_available(0));
+  EXPECT_FALSE(pyrowave::is_server_video_format_available(0u));
+  EXPECT_FALSE(pyrowave::is_server_video_format_available(1u));
+  EXPECT_FALSE(pyrowave::is_server_video_format_available(2u));
+  EXPECT_FALSE(pyrowave::is_server_video_format_available(UINT32_MAX));
 #else
   EXPECT_FALSE(pyrowave::is_server_video_format_available(LI_PYROWAVE_VIDEO_FORMAT));
-  EXPECT_TRUE(pyrowave::is_server_video_format_available(0));
+  EXPECT_TRUE(pyrowave::is_server_video_format_available(0u));
+  EXPECT_TRUE(pyrowave::is_server_video_format_available(1u));
+  EXPECT_TRUE(pyrowave::is_server_video_format_available(2u));
+  EXPECT_TRUE(pyrowave::is_server_video_format_available(UINT32_MAX));
 #endif
 }
 

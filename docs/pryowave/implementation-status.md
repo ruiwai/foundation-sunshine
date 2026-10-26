@@ -153,3 +153,9 @@ Static/portable checks only (portable excludes video.cpp); Windows full compilat
 
 PyroWave VDD-dispatch/v1: auto (empty) and explicit vdd select direct VDD capture; unsupported backends/non-DXGI reject without fallback.
 Portable pure-policy tests passed; Windows display factory compilation/runtime validation remains pending.
+
+Private-Windows-probe/v1: PyroWave runtime gate checks capture policy/exact display and fails closed; capture is validated per session.
+Status resets legacy codec flags; readiness is published only on success. Legacy probe body retained, unreachable on Windows.
+Static/portable checks only (portable excludes video.cpp); changed Windows compilation/link and runtime validation remain pending.
+RTSP and capture reject non-PyroWave formats on Windows before legacy dispatch; legacy advertisement cleanup remains pending.
+Windows compilation/runtime validation of these rejection paths remains pending.

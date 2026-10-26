@@ -40,6 +40,7 @@ extern "C" {
 #include "amf/amf_encoder.h"
 #include "platform/common.h"
 #include "pyrowave/capture_policy.h"
+#include "pyrowave/runtime.h"
 #include "pyrowave/signal_contract.h"
 #include "sync.h"
 #include "video.h"
@@ -1734,6 +1735,9 @@ namespace video {
 
   static encoder_t *chosen_encoder;
   static std::atomic<const encoder_t *> active_encoder_for_status { nullptr };
+#ifdef _WIN32
+  static std::atomic_bool pyrowave_probe_ready { false };
+#endif
   int active_hevc_mode;
   int active_av1_mode;
   bool last_encoder_probe_supported_ref_frames_invalidation = false;
@@ -1746,8 +1750,12 @@ namespace video {
 
   std::string
   active_encoder_name() {
+#ifdef _WIN32
+    return pyrowave_probe_ready.load(std::memory_order_acquire) ? "pyrowave" : "";
+#else
     const auto *encoder = active_encoder_for_status.load(std::memory_order_acquire);
     return encoder ? std::string { encoder->name } : std::string {};
+#endif
   }
 
   void
@@ -4557,14 +4565,15 @@ namespace video {
     std::optional<safe::mail_raw_t::event_t<dynamic_param_t>> dynamic_param_events,
     int packet_size) {
 #ifdef _WIN32
-    if (config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT)) {
-      // PyroWave uses the same shared capture coordinator and encoder-loop
-      // pacing as the legacy backends. Its session factory is selected inside
-      // capture_async, so display reinit and system-memory fallback remain
-      // owned by the capture thread.
-      capture_async(std::move(mail), config, channel_data, dynamic_param_events, packet_size);
+    if (config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT)) {
+      BOOST_LOG(error) << "Unsupported private video format: "sv << config.videoFormat;
+      mail->event<bool>(mail::shutdown)->raise(true);
       return;
     }
+    // PyroWave uses the shared capture coordinator and encoder-loop pacing.
+    // capture_async selects its dedicated session factory.
+    capture_async(std::move(mail), config, channel_data, dynamic_param_events, packet_size);
+    return;
 #endif
     auto idr_events = mail->event<bool>(mail::idr);
 
@@ -4935,12 +4944,52 @@ namespace video {
       "Encoder probe succeeded.",
       {}
     };
+#ifdef _WIN32
+    pyrowave_probe_ready.store(false, std::memory_order_release);
+    chosen_encoder = nullptr;
+    active_encoder_for_status.store(nullptr, std::memory_order_release);
+    active_hevc_mode = active_av1_mode = 1;
+    last_encoder_probe_supported_ref_frames_invalidation = false;
+    last_encoder_probe_supported_yuv444_for_codec.fill(false);
+#endif
 
     if (!allow_encoder_probing()) {
       active_encoder_for_status.store(nullptr, std::memory_order_release);
       // Error already logged
       return -1;
     }
+#ifdef _WIN32
+    if (const auto reason = pyrowave::validate_capture_backend(true, config::video.capture)) {
+      last_encoder_probe_result = {
+        probe_error_e::configured_encoder_unavailable, reason,
+        "Select auto (empty) or vdd capture; this Windows build supports PyroWave VDD-only capture."
+      };
+      return -1;
+    }
+    if (target && target->policy == probe_target_policy_e::exact) {
+      const auto resolved = display_device::get_display_name(target->output_name);
+      const auto displays = platf::display_names(platf::mem_type_e::dxgi);
+      if (resolved.empty() || select_encoder_probe_display(resolved, displays) != resolved) {
+        last_encoder_probe_result = {
+          probe_error_e::no_active_display,
+          "The requested display is not active or available to DXGI.",
+          "Connect or enable the selected display and verify the VDD/output selection, then try again."
+        };
+        return -1;
+      }
+    }
+    if (!pyrowave::is_server_runtime_available()) {
+      last_encoder_probe_result = {
+        probe_error_e::no_working_encoder,
+        "The PyroWave runtime gate failed; no legacy encoder fallback is available.",
+        "Check PyroWave runtime diagnostics for API version, native FP16 and Vulkan/D3D11 interop support."
+      };
+      return -1;
+    }
+    last_encoder_probe_result.message = "PyroWave runtime gate passed; capture is validated per session.";
+    pyrowave_probe_ready.store(true, std::memory_order_release);
+    return 0;
+#endif
     auto encoder_list = encoders;
 
     // If we already have a good encoder, check to see if another probe is required
