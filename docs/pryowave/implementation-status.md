@@ -57,7 +57,11 @@ UHD770 quality/performance measurements or hardware soak is claimed here.
 - Source-lease strict-success/v1 checks require `S_OK` on borrowed release and retain
   pending leases/accounting when the borrowed mutex is missing; Windows checks pending.
 - CI `40372952762` was blocked before build/tests by DualSense download HTTP 504.
-  Replacement `40375057787` at `5c56d4e` is pending and does **not** include these new edits.
+  Replacement `40375057787` at `5c56d4e` built changed objects and three test binaries.
+  Original WARP color/reference and all five source-lease tests passed; borrowed WARP
+  failed with 540 pixel failures matching the producer's later white overwrite.
+  Explicit source-completion correction now waits on D3D11 EVENT queries before handoff;
+  Windows compilation/runtime validation remains **PENDING**; this is not resolved.
 
 | Requirement | Code / tests; remaining evidence |
 | --- | --- |

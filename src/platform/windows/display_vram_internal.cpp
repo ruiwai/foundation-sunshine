@@ -11,6 +11,22 @@
 namespace platf::dxgi {
   using namespace std::literals;
 
+  bool
+  wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms) {
+    if (!context || !query) return false;
+    context->End(query);
+    context->Flush();
+    // Bound pending polling only; driver calls themselves are not cancellable.
+    const auto start = GetTickCount64();
+    for (;;) {
+      BOOL complete = FALSE;
+      const auto status = context->GetData(query, &complete, sizeof(complete), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+      if (status == S_OK) return complete == TRUE;
+      if (status != S_FALSE || GetTickCount64() - start >= timeout_ms) return false;
+      Sleep(1);
+    }
+  }
+
   void
   img_d3d_t::note_borrowed_vdd_frame_returned() {
     auto counter = std::move(borrowed_vdd_inflight_counter);

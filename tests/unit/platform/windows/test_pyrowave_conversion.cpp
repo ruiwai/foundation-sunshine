@@ -10,6 +10,7 @@
 #include <d3dcompiler.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
+#include "src/platform/windows/display_vram_internal.h"
 
 namespace {
   using Microsoft::WRL::ComPtr;
@@ -102,11 +103,15 @@ namespace {
       ComPtr<ID3D11DeviceContext> producer_context;
       ComPtr<ID3D11Texture2D> producer_source;
       ComPtr<IDXGIKeyedMutex> producer_mutex, consumer_mutex;
+      ComPtr<ID3D11Query> producer_completion, consumer_completion;
       std::unique_ptr<void, decltype(&CloseHandle)> shared_handle(nullptr, &CloseHandle);
       if (borrowed) {
         const D3D_FEATURE_LEVEL required = D3D_FEATURE_LEVEL_11_0;
         ASSERT_HRESULT_SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
           &required, 1, D3D11_SDK_VERSION, &producer, nullptr, &producer_context));
+        const D3D11_QUERY_DESC event_desc {D3D11_QUERY_EVENT, 0};
+        ASSERT_HRESULT_SUCCEEDED(producer->CreateQuery(&event_desc, &producer_completion));
+        ASSERT_HRESULT_SUCCEEDED(device->CreateQuery(&event_desc, &consumer_completion));
         desc.Usage = D3D11_USAGE_DEFAULT;
         desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
         ASSERT_HRESULT_SUCCEEDED(producer->CreateTexture2D(&desc, nullptr, &producer_source));
@@ -124,7 +129,7 @@ namespace {
         ASSERT_HRESULT_SUCCEEDED(consumer->OpenSharedResource1(shared_handle.get(), IID_PPV_ARGS(&source)));
         ASSERT_HRESULT_SUCCEEDED(source.As(&consumer_mutex));
         ASSERT_EQ(consumer_mutex->AcquireSync(2, 0), WAIT_TIMEOUT);
-        producer_context->Flush();
+        ASSERT_TRUE(platf::dxgi::wait_for_gpu_completion(producer_context.Get(), producer_completion.Get(), 1000));
         ASSERT_EQ(producer_mutex->ReleaseSync(2), S_OK);
       }
       else {
@@ -164,9 +169,9 @@ namespace {
       context->Dispatch((w / 2 + 7) / 8 + 1, (h / 2 + 7) / 8 + 1, 1);
       context->ClearState(); // Unbind SRV, UAVs, constants and shader before copying.
       if (borrowed) {
-        context->Flush();
+        ASSERT_TRUE(platf::dxgi::wait_for_gpu_completion(context.Get(), consumer_completion.Get(), 1000));
         ASSERT_EQ(consumer_mutex->ReleaseSync(0), S_OK);
-        // Reuse the borrowed source before any output Map or CPU completion wait.
+        // Reuse the borrowed source before output Map (after explicit source completion).
         ASSERT_EQ(producer_mutex->AcquireSync(0, 1000), S_OK);
         const auto white = pattern(w, h, 1);
         producer_context->UpdateSubresource(producer_source.Get(), 0, nullptr, white.data(), w * 4, 0);

@@ -299,6 +299,8 @@ namespace platf::dxgi {
   }
 
   class d3d_base_encode_device final {
+    query_t direct_completion;
+
     // HLG encoding parameters. Keep the layout in sync with the shader cbuffer.
     struct alignas(16) HdrEncodingParams {
       float nominalPeakNits;
@@ -398,6 +400,8 @@ namespace platf::dxgi {
       }
       auto &ctx = img_ctx_map[img.id];
       if (initialize_image_context(img, ctx)) return -1;
+      if (!direct_completion) direct_completion = make_query(D3D11_QUERY_EVENT);
+      if (!direct_completion) return -1;
       const auto status = ctx.encoder_mutex->AcquireSync(img.encoder_acquire_key, 16);
       if (status != S_OK) {
         BOOST_LOG(error) << "PyroWave direct source acquire failed: " << util::log_hex(status);
@@ -411,11 +415,10 @@ namespace platf::dxgi {
         device_ctx->CSSetUnorderedAccessViews(0, 3, null_uavs, nullptr);
         device_ctx->CSSetConstantBuffers(0, 1, &null_cb);
         device_ctx->CSSetShader(nullptr, nullptr, 0);
-        device_ctx->Flush();
       };
       auto guard = util::fail_guard([&]() {
         cleanup();
-        img.release_borrowed_vdd_after_convert(ctx.encoder_mutex.get());
+        // Retain ownership on failure/exception: no unproven source return.
       });
       auto *source = ctx.encoder_input_res.get();
       device_ctx->CSSetShader(shader, nullptr, 0);
@@ -424,9 +427,9 @@ namespace platf::dxgi {
       device_ctx->CSSetConstantBuffers(0, 1, &range);
       device_ctx->Dispatch((width / 2 + 7) / 8, (height / 2 + 7) / 8, 1);
       cleanup();
+      if (!wait_for_gpu_completion(device_ctx.get(), direct_completion.get(), 1000)) return -1;
       guard.disable();
-      // Keyed-mutex handoff, not Flush or CPU return, orders queued GPU reads
-      // before producer acquisition. Return the borrowed source exactly once.
+      // Completion proves source reads finished; return the source exactly once.
       return img.release_borrowed_vdd_after_convert(ctx.encoder_mutex.get()) ? 0 : -1;
     }
 

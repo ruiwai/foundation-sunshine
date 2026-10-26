@@ -12,6 +12,8 @@
 #include "display.h"
 
 namespace platf::dxgi {
+  bool wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms);
+
   struct shared_yuv_plane_t {
     HANDLE shared_handle = nullptr;
     std::uint32_t width = 0;
