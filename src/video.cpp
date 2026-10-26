@@ -3806,7 +3806,7 @@ namespace video {
 
       if (!frame_ready) continue;
       std::optional<encoder_rebuild_context_t> rebuild_context;
-      if (current_img) rebuild_context.emplace(*disp, encoder, config, *current_img);
+      if (current_img && encoder) rebuild_context.emplace(*disp, *encoder, config, *current_img);
       if (encode(frame_nr++, session, packets, channel_data, frame_timestamp, std::move(pipeline_trace), rebuild_context ? &*rebuild_context : nullptr)) {
         BOOST_LOG(error) << "Could not encode video packet"sv;
         if (backend_failure_handler) {

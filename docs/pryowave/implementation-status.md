@@ -162,3 +162,5 @@ Windows compilation/runtime validation of these rejection paths remains pending.
 
 Private-advertisements/v1: private SDR capabilities only; Windows legacy codec advertisement bits are zero.
 Portable checks cover the capability getter; Windows advertisement compilation and client discovery interoperability remain unverified/pending.
+Descriptor-rebuild/v1: Windows CI `40417574788` failed compilation on a missed rebuild descriptor reference.
+Pointer-to-reference correction is available; Windows compilation/link verification remains pending, not passed.
