@@ -118,3 +118,8 @@ No GPU or Windows validation claimed; stale native full-test fragment-success ca
 Native `e68a75aebd2a1d185725852d294dc4cf33bef2df`: four unused shader requests removed; embedded SPIR-V 22768 bytes less.
 11 retained compute modules byte-identical + spirv-val passed; reproducible header SHA256 `71dd7f1391cc8a4bb8e3f288afed8f44c308c8e813e3965b452486de14f95c73`.
 Native build/features 1/1 passed; roundtrip investigation waived/test not run; Windows/hardware pending; no speed claim.
+
+Borrow-only VDD shrink/v1 removes the VDD snapshot copy path and cursor compositing; transient backpressure returns timeout.
+Disabled borrowing or visible cursor without existing local-mode activation fails strictly; activation does not prove cursor delivery; global capture fallbacks remain.
+Prior replacement Windows WARP/source-lease coverage at `d272d2e` is not a snapshot runtime pass.
+Windows build and end-to-end VDD/runtime cursor validation of this change remain pending.
