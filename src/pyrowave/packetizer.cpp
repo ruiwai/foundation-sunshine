@@ -140,7 +140,8 @@ namespace pyrowave {
           return true;
         };
 
-        std::vector<std::uint8_t> frame_header_payload(payload_boundary, 0);
+        auto &frame_header_payload = frame_header_payload_;
+        frame_header_payload.assign(payload_boundary, 0);
         std::copy_n(request.metadata.begin(), std::min(metadata_length, payload_boundary),
           frame_header_payload.begin());
         const auto common_flags = static_cast<std::uint8_t>(
@@ -179,7 +180,7 @@ namespace pyrowave {
           return failure(failure_e::packetization_failed);
         }
 
-        std::vector<std::uint8_t> scratch;
+        auto &scratch = scratch_;
         for (std::size_t index = 0; index < data_block_count; ++index) {
           const auto offset = index * payload_boundary;
           const auto source_payload_size = std::min(payload_boundary, protected_size - offset);
@@ -250,7 +251,8 @@ namespace pyrowave {
         }
 
         if (request.block_aware_fec) {
-          std::vector<std::uint8_t> parity(payload_boundary);
+          auto &parity = parity_;
+          parity.resize(payload_boundary);
           for (std::size_t group = 0; group < fec_group_count; ++group) {
             std::fill(parity.begin(), parity.end(), 0);
             const auto group_start = group * LI_PYROWAVE_FEC_DATA_PER_GROUP;
@@ -327,6 +329,10 @@ namespace pyrowave {
     }
 
     void reset() noexcept override {}
+
+  private:
+    // Scratch only; calls on an instance must be serialized. Results own their storage.
+    std::vector<std::uint8_t> frame_header_payload_, scratch_, parity_;
   };
 
   std::unique_ptr<packetizer_t>

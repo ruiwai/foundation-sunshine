@@ -45,6 +45,7 @@ namespace platf::pyrowave_windows {
         std::chrono::steady_clock::now() - *frame_timestamp).count();
       const auto latency = static_cast<std::uint16_t>(std::clamp<std::int64_t>(
         (elapsed + 50) / 100, 0, std::numeric_limits<std::uint16_t>::max()));
+      metadata.reserve(10);
       append_u16(metadata, LI_PYROWAVE_METADATA_HOST_PROCESSING_LATENCY);
       append_u16(metadata, runtime_metadata_flags);
       append_u32(metadata, sizeof(latency));
@@ -124,7 +125,8 @@ namespace platf::pyrowave_windows {
         metadata_flags = LI_PYROWAVE_METADATA_FLAG_PROTECTED |
           (frame_timestamp ? LI_PYROWAVE_METADATA_FLAG_RUNTIME : 0);
       }
-      auto packetized = pyrowave::make_transport_packetizer()->packetize(frame, {
+      thread_local auto packetizer = pyrowave::make_transport_packetizer();
+      auto packetized = packetizer->packetize(frame, {
         .packet_boundary = packet_boundary + LI_PYROWAVE_WIRE_FEC_HEADER_SIZE,
         .rtp_timestamp = rtp_timestamp,
         .block_aware_fec = true,

@@ -584,6 +584,49 @@ TEST(PyrowavePacketizerTest, ProtectsMetadataAndStripsItBeforeDecode) {
   LiPyrowaveReassemblyDestroy(&state);
 }
 
+TEST(PyrowavePacketizerTest, ReusesOnlyScratchAndPreservesEarlierResults) {
+  auto packetizer = pyrowave::make_transport_packetizer();
+  pyrowave::packetization_result_t retained, snapshot;
+  for (unsigned i = 0; i < 24; ++i) {
+    SCOPED_TRACE(i);
+    const pyrowave::encoded_frame_t frame {
+      .frame_id = i + 1,
+      .deadline = { std::chrono::steady_clock::now(), std::chrono::milliseconds(100) },
+      .bitstream = { std::make_shared<const std::vector<std::uint8_t>>(3001 + i * 37, i + 1) },
+    };
+    const bool metadata = (i & 4) != 0;
+    const pyrowave::packetization_request_t request {
+      .packet_boundary = (i & 1) ? LI_PYROWAVE_MAX_PACKET_SIZE : 128u,
+      .rtp_timestamp = 9000 + i * 3000,
+      .block_aware_fec = (i & 2) != 0,
+      .metadata = metadata ? optional_metadata(137 + i) : std::vector<std::uint8_t> {},
+      .metadata_flags = static_cast<std::uint16_t>(metadata ?
+        LI_PYROWAVE_METADATA_FLAG_PROTECTED | LI_PYROWAVE_METADATA_FLAG_OPTIONAL : 0),
+    };
+    if (i == 12) packetizer->reset();
+    const auto reused = packetizer->packetize(frame, request);
+    const auto fresh = pyrowave::make_transport_packetizer()->packetize(frame, request);
+    ASSERT_EQ(reused.failure, pyrowave::failure_e::none);
+    ASSERT_EQ(fresh.failure, pyrowave::failure_e::none);
+    ASSERT_TRUE(pyrowave::validate(reused));
+    ASSERT_TRUE(pyrowave::validate(fresh));
+    EXPECT_NE(reused.bitstream.storage, fresh.bitstream.storage);
+    EXPECT_EQ(*reused.bitstream.storage, *fresh.bitstream.storage);
+    ASSERT_EQ(reused.packets.size(), fresh.packets.size());
+    for (std::size_t j = 0; j < reused.packets.size(); ++j) {
+      EXPECT_EQ(reused.packets[j].offset, fresh.packets[j].offset);
+      EXPECT_EQ(reused.packets[j].size, fresh.packets[j].size);
+    }
+    if (i == 0) { retained = reused; snapshot = fresh; }
+    EXPECT_EQ(*retained.bitstream.storage, *snapshot.bitstream.storage);
+    ASSERT_EQ(retained.packets.size(), snapshot.packets.size());
+    for (std::size_t j = 0; j < retained.packets.size(); ++j) {
+      EXPECT_EQ(retained.packets[j].offset, snapshot.packets[j].offset);
+      EXPECT_EQ(retained.packets[j].size, snapshot.packets[j].size);
+    }
+  }
+}
+
 TEST(PyrowavePacketizerTest, RejectsMetadataLargerThanProtocolLimit) {
   const pyrowave::encoded_frame_t frame {
     .frame_id = 14,

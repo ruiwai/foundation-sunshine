@@ -101,3 +101,6 @@ These host phases include CPU waits/work, not GPU-only timestamps or measured pe
 
 SDR backend dead HDR work removed; existing rejection guards and SDR wire unchanged.
 Windows compilation/runtime not yet verified; no speedup claim.
+
+Packetizer reuses only temporary scratch; returned wire storage/spans remain independently owned.
+Windows transport uses a thread-local instance; no benchmark or Windows compilation claim.
