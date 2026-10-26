@@ -42,8 +42,16 @@ Code presence is not proof of Windows/GPU runtime behavior.
 - After exception-isolation changes: 33 portable unit cases passed; CTest
   passed both the unit target and packetizer probe (2/2 entries).
 - Independent static review of the exception-isolation change passed.
-- Windows-only API, color, budget, dynamic-HDR and transport cases have not
-  been executed locally. Windows compilation and Actions results remain pending.
+- Focused Windows [Actions run 40329815631](https://github.com/ruiwai/foundation-sunshine/actions/runs/40329815631)
+  passed at `eca8a1b04f76e85c4215582d64ef87b48800be76`. Logs inspected with
+  `gh run view --log` confirm both changed CPU/GPU encoder objects compiled
+  and `pyrowave_unit_tests` plus `pyrowave_packetizer_probe` passed (2/2 CTest
+  entries). Successful-test output does not expose individual Windows case counts.
+- The focused dispatch input `pyrowave_tests_only=true` skips the full suite
+  and packaging; normal CI defaults are unchanged. The earlier full run was
+  cancelled in favor of this scope at the user's request, not reported as passed.
+- Windows-only tests were executed in CI, not locally. Hardware-dependent
+  capture/encoding/presentation and a full Sunshine link remain unverified.
 
 ## Boundaries and outstanding runtime evidence
 
