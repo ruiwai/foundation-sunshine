@@ -150,3 +150,6 @@ Driver-destroy blocking is not resolved; Windows compilation/runtime validation 
 Descriptor-decouple/v1: PyroWave runtime selects dedicated DXGI capture and accepts a null legacy descriptor.
 Global encoder probe and mux decoupling remain pending.
 Static/portable checks only (portable excludes video.cpp); Windows full compilation/link pending; no hardware claim.
+
+PyroWave VDD-dispatch/v1: auto (empty) and explicit vdd select direct VDD capture; unsupported backends/non-DXGI reject without fallback.
+Portable pure-policy tests passed; Windows display factory compilation/runtime validation remains pending.

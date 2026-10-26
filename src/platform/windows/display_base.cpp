@@ -36,6 +36,8 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE: DWORD {
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/pyrowave/runtime.h"
+#include "src/pyrowave/signal_contract.h"
 #include "src/video.h"
 
 namespace platf {
@@ -1285,6 +1287,14 @@ namespace platf {
     std::vector<std::string> try_types;
 
     const auto capture_backend = config.capture_backend_override.empty() ? config::video.capture : config.capture_backend_override;
+
+    if (pyrowave::is_experimental_video_format(config.videoFormat)) {
+      if (const auto reason = pyrowave::validate_capture_backend(hwdevice_type == mem_type_e::dxgi, capture_backend)) {
+        BOOST_LOG(error) << reason;
+        return nullptr;
+      }
+      return try_init(std::make_shared<dxgi::display_vdd_vram_t>());
+    }
 
     if (capture_backend.empty()) {
       if (is_running_as_system_user) {

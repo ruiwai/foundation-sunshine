@@ -4,7 +4,17 @@
  */
 #pragma once
 
+#include <string_view>
+
 namespace pyrowave {
+  constexpr const char *validate_capture_backend(bool dxgi, std::string_view backend) noexcept {
+    if (!dxgi)
+      return "PyroWave requires DXGI capture; select a DXGI hardware device";
+    if (!backend.empty() && backend != "vdd")
+      return "PyroWave supports VDD-only capture; select auto (empty) or vdd";
+    return nullptr;
+  }
+
   constexpr const char *
   validate_capture_size(int requested_width, int requested_height, int capture_width, int capture_height) noexcept {
     if (requested_width <= 0 || requested_height <= 0 || requested_width % 2 != 0 || requested_height % 2 != 0) {

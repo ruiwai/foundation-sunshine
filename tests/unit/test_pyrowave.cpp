@@ -43,6 +43,26 @@ extern "C" {
 
 namespace {
 
+  static_assert(noexcept(pyrowave::validate_capture_backend(true, "vdd")));
+  static_assert(pyrowave::validate_capture_backend(true, "") == nullptr);
+  static_assert(pyrowave::validate_capture_backend(true, "vdd") == nullptr);
+  static_assert(pyrowave::validate_capture_backend(false, "") != nullptr);
+  static_assert(pyrowave::validate_capture_backend(false, "vdd") != nullptr);
+
+  TEST(PyrowaveCaptureBackendTest, AutoAndVddRequireDxgi) {
+    for (const auto backend : { "", "vdd" }) {
+      EXPECT_EQ(pyrowave::validate_capture_backend(true, backend), nullptr);
+      EXPECT_NE(pyrowave::validate_capture_backend(false, backend), nullptr);
+    }
+  }
+
+  TEST(PyrowaveCaptureBackendTest, RejectsUnsupportedBackends) {
+    for (const auto backend : { "ddx", "wgc", "amd", "unknown", "VDD" }) {
+      EXPECT_NE(pyrowave::validate_capture_backend(true, backend), nullptr);
+      EXPECT_NE(pyrowave::validate_capture_backend(false, backend), nullptr);
+    }
+  }
+
   pyrowave::config_t
   enabled_config() {
     pyrowave::config_t config;
