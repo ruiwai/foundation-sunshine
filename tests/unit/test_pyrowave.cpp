@@ -5,6 +5,7 @@
 #include "src/pyrowave/capabilities.h"
 #include "src/pyrowave/capture_policy.h"
 #include "src/pyrowave/config.h"
+#include "src/pyrowave/encode_guard.h"
 #include "src/pyrowave/gpu_interop.h"
 #include "src/pyrowave/packet.h"
 #include "src/pyrowave/packetizer.h"
@@ -32,6 +33,7 @@ extern "C" {
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <new>
 #include <vector>
 
 namespace {
@@ -1384,4 +1386,49 @@ TEST(PyrowaveSessionTest, FailedSessionCanNegotiateAgain) {
 
   EXPECT_EQ(session.negotiate(enabled_config(), supported_device(), supported_client()), pyrowave::failure_e::none);
   EXPECT_EQ(session.snapshot().state, pyrowave::session_state_e::prepared);
+}
+
+TEST(PyrowaveEncodeGuardTest, PreservesReturnCodesWithoutDiagnostics) {
+  int failures = 0;
+  for (int code : { 0, 7, -8 }) {
+    EXPECT_EQ(pyrowave::guarded_encode([&] { return code; }, [&](std::exception_ptr) { ++failures; }), code);
+  }
+  EXPECT_EQ(failures, 0);
+}
+
+TEST(PyrowaveEncodeGuardTest, ConvertsBadAllocAndReportsOriginalExceptionOnce) {
+  const auto original = std::make_exception_ptr(std::bad_alloc {});
+  int failures = 0;
+  EXPECT_EQ(pyrowave::guarded_encode([&]() -> int { std::rethrow_exception(original); }, [&](std::exception_ptr error) {
+    ++failures;
+    EXPECT_EQ(error, original);
+    EXPECT_THROW(std::rethrow_exception(error), std::bad_alloc);
+  }), -1);
+  EXPECT_EQ(failures, 1);
+}
+
+TEST(PyrowaveEncodeGuardTest, ConvertsUnknownExceptionAndReportsOriginalOnce) {
+  const auto original = std::make_exception_ptr(42);
+  int failures = 0;
+  EXPECT_EQ(pyrowave::guarded_encode([&]() -> int { std::rethrow_exception(original); }, [&](std::exception_ptr error) {
+    ++failures;
+    EXPECT_EQ(error, original);
+    try {
+      std::rethrow_exception(error);
+    }
+    catch (int value) {
+      EXPECT_EQ(value, 42);
+    }
+  }), -1);
+  EXPECT_EQ(failures, 1);
+}
+
+TEST(PyrowaveEncodeGuardTest, SwallowsThrowingDiagnostics) {
+  int failures = 0;
+  EXPECT_EQ(pyrowave::guarded_encode([]() -> int { throw std::bad_alloc {}; }, [&](std::exception_ptr error) {
+    ++failures;
+    EXPECT_THROW(std::rethrow_exception(error), std::bad_alloc);
+    throw 99;
+  }), -1);
+  EXPECT_EQ(failures, 1);
 }

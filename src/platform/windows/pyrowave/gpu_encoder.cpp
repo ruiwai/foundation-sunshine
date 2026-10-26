@@ -10,6 +10,7 @@
 #include "../display.h"
 #include "../display_vram_internal.h"
 #include "src/config.h"
+#include "src/pyrowave/encode_guard.h"
 #include "src/pyrowave/packetizer.h"
 #include "src/pyrowave/dynamic_hdr.h"
 #include "src/streaming/perf_recorder.h"
@@ -658,17 +659,19 @@ namespace platf::pyrowave_windows {
     if (session == nullptr) {
       return -1;
     }
-    try {
+    return pyrowave::guarded_encode([&] {
       return session->encode(
         frame_number, packets, channel_data, frame_timestamp, std::move(pipeline_trace));
-    }
-    catch (const std::exception &error) {
-      BOOST_LOG(warning) << "PyroWave GPU frame failed: frame=" << frame_number << ", exception=" << error.what();
-      return -1;
-    }
-    catch (...) {
-      BOOST_LOG(warning) << "PyroWave GPU frame failed: frame=" << frame_number << ", unknown exception";
-      return -1;
-    }
+    }, [&](std::exception_ptr exception) {
+      try {
+        std::rethrow_exception(exception);
+      }
+      catch (const std::exception &error) {
+        BOOST_LOG(warning) << "PyroWave GPU frame failed: frame=" << frame_number << ", exception=" << error.what();
+      }
+      catch (...) {
+        BOOST_LOG(warning) << "PyroWave GPU frame failed: frame=" << frame_number << ", unknown exception";
+      }
+    });
   }
 }  // namespace platf::pyrowave_windows
