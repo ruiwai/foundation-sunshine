@@ -11,6 +11,7 @@
 #include "../display_vram_internal.h"
 #include "src/config.h"
 #include "src/pyrowave/encode_guard.h"
+#include "src/pyrowave/plane_ring.h"
 #include "src/pyrowave/packetizer.h"
 #include "src/pyrowave/dynamic_hdr.h"
 #include "src/streaming/perf_recorder.h"
@@ -190,7 +191,13 @@ namespace platf::pyrowave_windows {
           return;
         }
 
-        const auto &planes = conversion_->yuv_planes();
+        for (std::size_t slot = 0; slot < pyrowave::plane_ring_t::size; ++slot) {
+        const auto *slot_planes = conversion_->yuv_planes(slot);
+        if (slot_planes == nullptr) {
+          init_failure("invalid plane slot");
+          return;
+        }
+        const auto &planes = *slot_planes;
         for (std::size_t plane = 0; plane < planes.size(); ++plane) {
           HANDLE texture_handle = nullptr;
           if (!duplicate_handle(planes[plane].shared_handle, texture_handle)) {
@@ -226,16 +233,17 @@ namespace platf::pyrowave_windows {
             CloseHandle(texture_handle);
             return;
           }
-          images_[plane].reset(raw_image);
+          images_[slot][plane].reset(raw_image);
           const auto image_view_result = pyrowave_image_get_image_view(
-            images_[plane].get(), VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_SAMPLED_BIT,
-            &buffers_.planes[plane]);
+            images_[slot][plane].get(), VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_USAGE_SAMPLED_BIT,
+            &buffers_[slot].planes[plane]);
           if (image_view_result != PYROWAVE_SUCCESS) {
             init_failure("PyroWave YUV plane image view", static_cast<int>(image_view_result));
             return;
           }
         }
 
+        }
         const pyrowave_encoder_create_info encoder_info {
           .device = device_.get(),
           .width = config.width,
@@ -293,22 +301,27 @@ namespace platf::pyrowave_windows {
 
       [[nodiscard]] bool
       ready() const noexcept {
-        return initialized_;
+        return initialized_ && ring_.valid();
       }
 
       int
       convert(platf::img_t &image) override {
+        auto fail_guard = util::fail_guard([&]() { ring_.invalidate(); });
         has_frame_ = false;
         if (!ready()) {
           BOOST_LOG(warning) << "PyroWave GPU conversion failed: encoder is not ready";
           return -1;
         }
+        const auto slot = ring_.begin_conversion();
+        if (!slot || !conversion_->select_plane_slot(*slot)) return -1;
         const auto conversion_result = conversion_->convert(image);
         if (conversion_result != 0) {
           BOOST_LOG(warning) << "PyroWave GPU conversion failed: result=" << conversion_result;
           return -1;
         }
+        if (!ring_.finish_conversion(*slot)) return -1;
         has_frame_ = true;
+        fail_guard.disable();
         return 0;
       }
 
@@ -345,10 +358,13 @@ namespace platf::pyrowave_windows {
         void *channel_data,
         std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
         std::optional<platf::frame_pipeline_trace_t> pipeline_trace) {
+        auto fail_guard = util::fail_guard([&]() { ring_.invalidate(); });
         if (!ready() || !has_frame_) {
           return encode_failure(frame_number, "encoder-not-ready");
         }
 
+        const auto slot = ring_.begin_encode();
+        if (!slot) return encode_failure(frame_number, "plane-ring-admission");
         BOOST_LOG(verbose) << "[PyroWaveEncoder][GPU] encode frame=" << frame_number
                             << ", size=" << width_ << 'x' << height_
                             << ", packet_boundary=" << packet_boundary_
@@ -365,7 +381,7 @@ namespace platf::pyrowave_windows {
         std::array<pyrowave_gpu_external_reference, 3> references {};
         for (std::size_t plane = 0; plane < references.size(); ++plane) {
           references[plane] = {
-            .image = images_[plane].get(),
+            .image = images_[*slot][plane].get(),
             .queue_family_index = VK_QUEUE_FAMILY_EXTERNAL,
           };
         }
@@ -396,7 +412,7 @@ namespace platf::pyrowave_windows {
           .maximum_bitstream_size = frame_budget,
         };
         const auto encode_result = pyrowave_encoder_encode_gpu(
-          encoder_.get(), &acquire, &release, &buffers_, &rate_control);
+          encoder_.get(), &acquire, &release, &buffers_[*slot], &rate_control);
         if (encode_result != PYROWAVE_SUCCESS) {
           return encode_failure(frame_number, "pyrowave-gpu-encode", static_cast<int>(encode_result));
         }
@@ -408,6 +424,7 @@ namespace platf::pyrowave_windows {
           return encode_failure(frame_number, "vulkan-to-d3d11-fence-probe");
         }
         sync_value_ = release_value;
+        if (!ring_.finish_encode(*slot)) return encode_failure(frame_number, "plane-ring-release");
 
         const pyrowave::hdr_frame_metadata_t *dynamic_metadata = nullptr;
         if (hdr_producer_.enabled()) {
@@ -426,7 +443,11 @@ namespace platf::pyrowave_windows {
                                << ", stage=" << (statistics_ready ? "invalid-metadata-payload" : "statistics-unavailable")
                                << ", frame=" << frame_number << ", sample=" << conversion_->hdr_luminance_stats.sample_sequence;
             }
-            if (now < *hdr_startup_deadline_) return 0;
+            if (now < *hdr_startup_deadline_) {
+              // Intentional startup deferral, after fence completion and ring release.
+              fail_guard.disable();
+              return 0;
+            }
             return encode_failure(frame_number, "dynamic-hdr-startup-analysis-timeout");
           }
           if (!hdr_metadata_started_) {
@@ -497,6 +518,7 @@ namespace platf::pyrowave_windows {
             true);
         }
         perf::record_encoded_frame(perf_session_id_);
+        fail_guard.disable();
         return 0;
       }
 
@@ -604,8 +626,9 @@ namespace platf::pyrowave_windows {
       device_ptr device_;
       encoder_ptr encoder_;
       sync_ptr sync_;
-      std::array<image_ptr, 3> images_;
-      pyrowave_gpu_buffers buffers_ {};
+      pyrowave::plane_ring_t ring_;
+      std::array<std::array<image_ptr, 3>, 2> images_;
+      std::array<pyrowave_gpu_buffers, 2> buffers_ {};
       std::uint64_t sync_value_ = 0;
       bool fence_return_verified_ = false;
       std::vector<pyrowave_packet> source_packets_;

@@ -6,6 +6,7 @@
 #include "src/pyrowave/capture_policy.h"
 #include "src/pyrowave/config.h"
 #include "src/pyrowave/encode_guard.h"
+#include "src/pyrowave/plane_ring.h"
 #include "src/pyrowave/gpu_interop.h"
 #include "src/pyrowave/packet.h"
 #include "src/pyrowave/packetizer.h"
@@ -149,6 +150,67 @@ TEST(PyrowaveApi, RejectsInvalidContextsWithoutAccessingADevice) {
   EXPECT_EQ(pyrowave_decoder_decode_cpu_buffer_complete(nullptr, &buffer, PYROWAVE_MAX_FRAME_CONTEXTS), PYROWAVE_ERROR_INVALID_ARGUMENT);
 }
 #endif
+
+TEST(PyrowavePlaneRingTest, AlternatesAndRefreshesOnlyAfterRelease) {
+  pyrowave::plane_ring_t ring;
+  EXPECT_TRUE(ring.valid());
+  EXPECT_FALSE(ring.begin_encode());
+  for (std::size_t i = 0; i < 6; ++i) {
+    const auto slot = ring.begin_conversion();
+    ASSERT_EQ(slot, i % 2);
+    EXPECT_FALSE(ring.begin_conversion());
+    EXPECT_FALSE(ring.begin_encode());
+    EXPECT_FALSE(ring.finish_encode(*slot));
+    EXPECT_FALSE(ring.finish_conversion(2));
+    EXPECT_FALSE(ring.finish_conversion(1 - *slot));
+    ASSERT_TRUE(ring.finish_conversion(*slot));
+    EXPECT_FALSE(ring.finish_conversion(*slot));
+    ASSERT_EQ(ring.begin_encode(), slot);
+    EXPECT_FALSE(ring.begin_encode());
+    EXPECT_FALSE(ring.begin_conversion());
+    EXPECT_FALSE(ring.finish_encode(2));
+    EXPECT_FALSE(ring.finish_encode(1 - *slot));
+    ASSERT_TRUE(ring.finish_encode(*slot));  // Caller has completed external fence wait.
+    EXPECT_FALSE(ring.finish_encode(*slot));
+    ASSERT_EQ(ring.begin_encode(), slot);  // Fresh encode of cached planes.
+    ASSERT_TRUE(ring.finish_encode(*slot));
+  }
+}
+
+TEST(PyrowavePlaneRingTest, DropsUnsubmittedReadyAndPrefersNewPlanesOverCache) {
+  pyrowave::plane_ring_t ring;
+  ASSERT_EQ(ring.begin_conversion(), 0u);
+  ASSERT_TRUE(ring.finish_conversion(0));
+  ASSERT_EQ(ring.begin_conversion(), 1u);
+  ASSERT_TRUE(ring.finish_conversion(1));
+  ASSERT_EQ(ring.begin_encode(), 1u);
+  ASSERT_TRUE(ring.finish_encode(1));
+  ASSERT_EQ(ring.begin_conversion(), 0u);
+  ASSERT_TRUE(ring.finish_conversion(0));
+  ASSERT_EQ(ring.begin_encode(), 0u);
+  ASSERT_TRUE(ring.finish_encode(0));
+  ASSERT_EQ(ring.begin_conversion(), 1u);
+  ASSERT_TRUE(ring.finish_conversion(1));
+  ASSERT_EQ(ring.begin_conversion(), 0u);  // Overwrites cached slot and drops ready 1.
+  ASSERT_TRUE(ring.finish_conversion(0));
+  ASSERT_EQ(ring.begin_encode(), 0u);
+}
+
+TEST(PyrowavePlaneRingTest, PoisoningPermanentlyRejectsAllReuse) {
+  for (unsigned phase = 0; phase < 4; ++phase) {
+    pyrowave::plane_ring_t ring;
+    if (phase > 0) { ASSERT_EQ(ring.begin_conversion(), 0u); }
+    if (phase > 1) { ASSERT_TRUE(ring.finish_conversion(0)); }
+    if (phase > 2) { ASSERT_EQ(ring.begin_encode(), 0u); }
+    ring.invalidate();
+    ring.invalidate();
+    EXPECT_FALSE(ring.valid());
+    EXPECT_FALSE(ring.begin_conversion());
+    EXPECT_FALSE(ring.begin_encode());
+    EXPECT_FALSE(ring.finish_conversion(0));
+    EXPECT_FALSE(ring.finish_encode(0));
+  }
+}
 
 TEST(PyrowaveConfigTest, RejectsMissingApiVersion) {
   auto config = enabled_config();

@@ -3018,11 +3018,13 @@ namespace platf::dxgi {
   class d3d_shared_yuv_encode_device_t final: public shared_yuv_encode_device_t {
   public:
     ~d3d_shared_yuv_encode_device_t() override {
-      for (auto &plane : planes_) {
+      for (auto &slot : planes_) {
+      for (auto &plane : slot) {
         if (plane.shared_handle) {
           CloseHandle(plane.shared_handle);
           plane.shared_handle = nullptr;
         }
+      }
       }
     }
 
@@ -3085,7 +3087,8 @@ namespace platf::dxgi {
         return false;
       }
 
-      for (std::size_t index = 0; index < planes_.size(); ++index) {
+      for (std::size_t slot = 0; slot < planes_.size(); ++slot) {
+      for (std::size_t index = 0; index < planes_[slot].size(); ++index) {
         const bool chroma = index != 0;
         D3D11_TEXTURE2D_DESC plane_desc {};
         plane_desc.Width = static_cast<UINT>(chroma ? config.width / 2 : config.width);
@@ -3097,28 +3100,29 @@ namespace platf::dxgi {
         plane_desc.Usage = D3D11_USAGE_DEFAULT;
         plane_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
         plane_desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
-        if (FAILED(base_.device->CreateTexture2D(&plane_desc, nullptr, &plane_textures_[index]))) {
+        if (FAILED(base_.device->CreateTexture2D(&plane_desc, nullptr, &plane_textures_[slot][index]))) {
           return false;
         }
         if (FAILED(base_.device->CreateShaderResourceView(
-              plane_textures_[index].get(), nullptr, &plane_srvs_[index])) ||
+              plane_textures_[slot][index].get(), nullptr, &plane_srvs_[slot][index])) ||
             FAILED(base_.device->CreateUnorderedAccessView(
-              plane_textures_[index].get(), nullptr, &plane_uavs_[index]))) {
+              plane_textures_[slot][index].get(), nullptr, &plane_uavs_[slot][index]))) {
           return false;
         }
         Microsoft::WRL::ComPtr<IDXGIResource1> resource;
-        if (FAILED(plane_textures_[index]->QueryInterface(IID_PPV_ARGS(&resource))) ||
+        if (FAILED(plane_textures_[slot][index]->QueryInterface(IID_PPV_ARGS(&resource))) ||
             FAILED(resource->CreateSharedHandle(
               nullptr,
               DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
               nullptr,
-              &planes_[index].shared_handle)) ||
-            planes_[index].shared_handle == nullptr) {
+              &planes_[slot][index].shared_handle)) ||
+            planes_[slot][index].shared_handle == nullptr) {
           return false;
         }
-        planes_[index].width = static_cast<std::uint32_t>(plane_desc.Width);
-        planes_[index].height = static_cast<std::uint32_t>(plane_desc.Height);
-        planes_[index].ten_bit = hdr_output;
+        planes_[slot][index].width = static_cast<std::uint32_t>(plane_desc.Width);
+        planes_[slot][index].height = static_cast<std::uint32_t>(plane_desc.Height);
+        planes_[slot][index].ten_bit = hdr_output;
+      }
       }
 
       base_.apply_colorspace(colorspace);
@@ -3142,15 +3146,15 @@ namespace platf::dxgi {
 
       ID3D11ShaderResourceView *inputs[] = { conversion_y_srv_.get(), conversion_uv_srv_.get() };
       ID3D11UnorderedAccessView *outputs[] = {
-        plane_uavs_[0].get(), plane_uavs_[1].get(), plane_uavs_[2].get() };
+        plane_uavs_[selected_slot_][0].get(), plane_uavs_[selected_slot_][1].get(), plane_uavs_[selected_slot_][2].get() };
       ID3D11RenderTargetView *null_rtvs[] = { nullptr, nullptr };
       base_.device_ctx->OMSetRenderTargets(2, null_rtvs, nullptr);
       base_.device_ctx->CSSetShader(split_shader_.get(), nullptr, 0);
       base_.device_ctx->CSSetShaderResources(0, 2, inputs);
       base_.device_ctx->CSSetUnorderedAccessViews(0, 3, outputs, nullptr);
       base_.device_ctx->Dispatch(
-        (planes_[0].width + 15u) / 16u,
-        (planes_[0].height + 15u) / 16u,
+        (planes_[selected_slot_][0].width + 15u) / 16u,
+        (planes_[selected_slot_][0].height + 15u) / 16u,
         1);
       ID3D11ShaderResourceView *null_inputs[] = { nullptr, nullptr };
       ID3D11UnorderedAccessView *null_outputs[] = { nullptr, nullptr, nullptr };
@@ -3162,7 +3166,12 @@ namespace platf::dxgi {
 
     ID3D11Device *d3d_device() noexcept override { return base_.device.get(); }
     ID3D11DeviceContext *d3d_context() noexcept override { return base_.device_ctx.get(); }
-    const std::array<shared_yuv_plane_t, 3> &yuv_planes() const noexcept override { return planes_; }
+    const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept override { return slot < planes_.size() ? &planes_[slot] : nullptr; }
+    bool select_plane_slot(std::size_t slot) noexcept override {
+      if (slot >= planes_.size()) return false;
+      selected_slot_ = slot;
+      return true;
+    }
 
     bool collect_hdr_luminance_stats() override {
       base_.read_hdr_analysis_results();
@@ -3177,10 +3186,11 @@ namespace platf::dxgi {
     shader_res_t conversion_y_srv_;
     shader_res_t conversion_uv_srv_;
     cs_t split_shader_;
-    std::array<texture2d_t, 3> plane_textures_;
-    std::array<shader_res_t, 3> plane_srvs_;
-    std::array<uav_t, 3> plane_uavs_;
-    std::array<shared_yuv_plane_t, 3> planes_;
+    std::array<std::array<texture2d_t, 3>, 2> plane_textures_;
+    std::array<std::array<shader_res_t, 3>, 2> plane_srvs_;
+    std::array<std::array<uav_t, 3>, 2> plane_uavs_;
+    std::array<std::array<shared_yuv_plane_t, 3>, 2> planes_ {};
+    std::size_t selected_slot_ = 0;
   };
 
   std::unique_ptr<shared_yuv_encode_device_t>
