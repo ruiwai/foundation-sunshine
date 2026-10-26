@@ -1,0 +1,50 @@
+# Private pipeline implementation evidence
+
+Implementation-first work is authorized; hardware acceptance remains deferred.
+Client wire fields and protocol versions remain unchanged.
+
+## Delivered slices
+
+- Sunshine branch: `pyrowave/uhd770-private`.
+- `1c5bde8`: SDR BT.709/YUV420 signal checks and atomic single-video admission.
+  Windows run `40341402933` passed.
+- PyroWave fork `ruiwai/pyrowave`, branch `uhd770/fp16-only`, commit
+  `76890c5`: mandatory native FP16 compute wavelets, removed precision switches,
+  regenerated shaders, and a GPU-free enabled-feature rejection test.
+  Sunshine pin: `ac8bc8c`; focused native-test wiring: `03d3835`.
+  Windows run `40349371844` passed all three focused CTest entries.
+- The actual embedded DWT/IDWT SPIR-V passed validation and contains half
+  arithmetic. Two shader-generation runs produced identical artifacts.
+- `710ff36`: centered-chroma fused SDR shader and Windows WARP reference tests.
+  The predetermined tolerance is one 8-bit code value per sample, with exact
+  uniform black/white endpoints. The Windows unit binary includes these tests;
+  individual-case output was not retained by the successful CTest invocation.
+- `dff0fa6`: two-slot plane ownership; reuse follows the existing release-fence
+  wait. Errors invalidate the ring. Refreshes re-encode retained planes, not
+  cached packets. Local portable tests: 45 cases plus packetizer probe passed.
+  Windows run `40356085453` passed three focused CTest entries and changed
+  backend compilation, including `display_vram.cpp`.
+
+## Known failing correctness check
+
+The native 34x30 round-trip validator ran on Linux Intel ADL GT2
+(`8086:46a1`), not Windows UHD770. It failed with maximum absolute 8-bit errors
+Y=4, Cb=3, Cr=3 against its existing limits Y=1, Cb=2, Cr=2 (exit 5).
+Diagnostic changes expose these errors without changing the limits.
+
+Reverted experiments: half-vector fused multiply-add yielded 4/3/2;
+initial quantization bits 8 with cap 512 yielded 2/2/2; combining them yielded
+2/2/1. None passed. Original shader/encoder sources and generated header were
+restored and the original validator rebuilt. No FP32 fallback was introduced.
+FP16 numerical correctness is therefore **not accepted** by this check.
+The user waived further investigation of this error; it remains a known failure.
+
+## Remaining integration and validation
+
+The production converter still uses the intermediate NV12/split path; the
+fused shader is not routed yet. Dedicated borrowed-capture lifecycle, broader
+capability checks, compatibility deletion and event-driven idle remain pending.
+Unreachable native fragment-renderer cleanup remains pending too.
+No full Sunshine link, Windows GPU interop runtime, paired-client decode,
+UHD770 quality/performance measurements or hardware soak is claimed here.
+- Native FP16 storage preflight + diagnostics: static review PASS; Linux build and feature test 1/1 PASS. Latest completed Windows CI remains `40356085453` (3/3 focused tests), not this publication head.
