@@ -4,7 +4,6 @@
  */
 #include "src/pyrowave/bounded_wait.h"
 #include "src/pyrowave/capabilities.h"
-#include "src/pyrowave/capture_policy.h"
 #include "src/pyrowave/config.h"
 #include "src/pyrowave/encode_guard.h"
 #include "src/pyrowave/plane_ring.h"
@@ -450,35 +449,6 @@ TEST(PyrowaveCapabilityTest, RequiresExactApiVersion) {
   const auto result = pyrowave::evaluate_capabilities(config, device, client);
   EXPECT_EQ(result.availability, pyrowave::availability_e::failed);
   EXPECT_EQ(result.failure, pyrowave::failure_e::api_mismatch);
-}
-
-TEST(PyrowaveCapturePolicyTest, RejectsFallbackWhileAnotherSessionIsRegistered) {
-  pyrowave::capture_policy_t policy;
-  ASSERT_TRUE(policy.attach(true));
-  ASSERT_TRUE(policy.attach(false));
-  EXPECT_FALSE(policy.request_system_capture());
-  EXPECT_FALSE(policy.system_capture());
-  policy.detach();
-  EXPECT_TRUE(policy.request_system_capture());
-}
-
-TEST(PyrowaveCapturePolicyTest, KeepsFallbackAcrossReinitAndRejectsIncompatibleJoins) {
-  pyrowave::capture_policy_t policy;
-  ASSERT_TRUE(policy.attach(true));
-  ASSERT_TRUE(policy.request_system_capture());
-  EXPECT_TRUE(policy.system_capture());
-  EXPECT_FALSE(policy.attach(false));
-  EXPECT_TRUE(policy.attach(true));
-  EXPECT_TRUE(policy.request_system_capture());
-  policy.detach();
-  EXPECT_TRUE(policy.system_capture());
-  policy.detach();
-  EXPECT_TRUE(policy.system_capture());
-  EXPECT_FALSE(policy.attach(false));
-  EXPECT_FALSE(policy.request_system_capture());
-  pyrowave::capture_policy_t next_capture;
-  EXPECT_FALSE(next_capture.system_capture());
-  EXPECT_TRUE(next_capture.attach(false));
 }
 
 TEST(PyrowavePacketTest, NegotiatedWireLimitAlsoBoundsOuterRtpGeometry) {

@@ -39,7 +39,6 @@ extern "C" {
 #include "nvenc/nvenc_encoder.h"
 #include "amf/amf_encoder.h"
 #include "platform/common.h"
-#include "pyrowave/capture_policy.h"
 #include "pyrowave/runtime.h"
 #include "pyrowave/signal_contract.h"
 #include "sync.h"
@@ -1158,10 +1157,6 @@ namespace video {
     std::thread capture_thread;
 
     safe::signal_t reinit_event;
-    // A backend failure can request a shared-display reinitialization without
-    // making the encoder thread own or replace the capture display directly.
-    std::atomic_bool force_system_capture { false };
-    sync_util::sync_t<pyrowave::capture_policy_t> capture_policy;
     const encoder_t *encoder_p;
     sync_util::sync_t<std::weak_ptr<platf::display_t>> display_wp;
   };
@@ -1820,8 +1815,6 @@ namespace video {
     std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue,
     sync_util::sync_t<std::weak_ptr<platf::display_t>> &display_wp,
     safe::signal_t &reinit_event,
-    std::atomic_bool &force_system_capture,
-    sync_util::sync_t<pyrowave::capture_policy_t> &capture_policy,
     const encoder_t *encoder) {
     std::vector<capture_ctx_t> capture_ctxs;
 
@@ -1851,21 +1844,6 @@ namespace video {
     }
     const auto capture_memory_type = is_pyrowave ? platf::mem_type_e::dxgi : encoder->platform_formats->dev_type;
     capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
-
-    auto reset_capture_display = [&](std::shared_ptr<platf::display_t> &display,
-                                     const std::string &name, const config_t &client_config) {
-      bool system_capture;
-      {
-        auto lock = capture_policy.lock();
-        system_capture = capture_policy->system_capture();
-      }
-      auto capture_config = client_config;
-      if (system_capture) {
-        capture_config.capture_backend_override = "ddx";
-      }
-      reset_display(display, system_capture ? platf::mem_type_e::system : capture_memory_type,
-        name, capture_config);
-    };
 
     // Get all the monitor names now, rather than at boot, to
     // get the most up-to-date list available monitors
@@ -1906,7 +1884,7 @@ namespace video {
     }
 
     std::shared_ptr<platf::display_t> disp;
-    reset_capture_display(disp, target_display_name, config);
+    reset_display(disp, capture_memory_type, target_display_name, config);
     if (!disp) {
       return;
     }
@@ -2057,11 +2035,6 @@ namespace video {
           return false;
         }
 
-        if (force_system_capture.load(std::memory_order_acquire)) {
-          artificial_reinit = true;
-          return false;
-        }
-
         // 先接入新会话，再分发本次真实画面。若本次只是捕获超时，则给新会话
         // 补发上一张真实画面，保证它与现有会话看到同一个活动显示器内容。
         if (!append_pending_capture_contexts(frame_captured ? std::shared_ptr<platf::img_t> {} : latest_captured_img)) {
@@ -2183,7 +2156,7 @@ namespace video {
             }
 
             // reset_display() will sleep between retries
-            reset_capture_display(disp, target_display_name, config);
+            reset_display(disp, capture_memory_type, target_display_name, config);
             if (disp) {
               active_display_event->raise(target_display_name);
               break;
@@ -2194,8 +2167,6 @@ namespace video {
           }
 
           display_wp = disp;
-
-          force_system_capture.store(false, std::memory_order_release);
 
           reinit_event.reset();
           continue;
@@ -4265,19 +4236,9 @@ namespace video {
       return;
     }
 
-    const bool accepts_system_capture = config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) &&
-      ref->encoder_p->platform_formats->dev_type == platf::mem_type_e::system;
-    {
-      auto lock = ref->capture_policy.lock();
-      if (!ref->capture_policy->attach(accepts_system_capture)) {
-        BOOST_LOG(error) << "Shared capture policy rejects this encoder's capture memory requirements"sv;
-        return;
-      }
-    }
-    auto admission_guard = util::fail_guard([&]() {
+    // Stop images before ref destruction can join the last capture worker.
+    auto images_guard = util::fail_guard([&]() {
       images->stop();
-      auto lock = ref->capture_policy.lock();
-      ref->capture_policy->detach();
     });
 
     ref->capture_ctx_queue->raise(capture_ctx_t { images, config });
@@ -5327,7 +5288,6 @@ namespace video {
   start_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
     capture_thread_ctx.encoder_p = chosen_encoder;
     capture_thread_ctx.reinit_event.reset();
-    capture_thread_ctx.force_system_capture.store(false, std::memory_order_release);
 
     capture_thread_ctx.capture_ctx_queue = std::make_shared<safe::queue_t<capture_ctx_t>>(30);
 
@@ -5336,8 +5296,6 @@ namespace video {
       capture_thread_ctx.capture_ctx_queue,
       std::ref(capture_thread_ctx.display_wp),
       std::ref(capture_thread_ctx.reinit_event),
-      std::ref(capture_thread_ctx.force_system_capture),
-      std::ref(capture_thread_ctx.capture_policy),
       capture_thread_ctx.encoder_p
     };
 
