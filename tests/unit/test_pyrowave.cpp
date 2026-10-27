@@ -44,6 +44,15 @@ extern "C" {
 
 namespace {
 
+  TEST(PyrowaveIdlePolicyTest, RejectsUnverifiedSuppression) {
+    static_assert(noexcept(pyrowave::validate_idle_policy(false)));
+    static_assert(noexcept(pyrowave::validate_idle_policy(true)));
+    static_assert(pyrowave::validate_idle_policy(false) == nullptr);
+    static_assert(pyrowave::validate_idle_policy(true) != nullptr);
+    EXPECT_EQ(pyrowave::validate_idle_policy(false), nullptr);
+    EXPECT_STREQ(pyrowave::validate_idle_policy(true), "PyroWave requires variable_refresh_rate disabled until paired-client idle/refresh behavior is verified");
+  }
+
   TEST(PyrowaveCursorPolicyTest, RequiresExplicitHiddenCursor) {
     static_assert(noexcept(pyrowave::validate_cursor_policy(false, false)));
     static_assert(pyrowave::validate_cursor_policy(false, false) == nullptr);

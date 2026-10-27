@@ -186,3 +186,7 @@ Shared cursor/input elsewhere unchanged; Windows validation of this revision rem
 Probe-override-removal/v1: obsolete DDX probe override plumbing removed; private Windows gate and non-Windows probe behavior preserved.
 Static caller/symbol review and portable build/CTest 2/2 passed; portable excludes changed video.cpp, video.h and test_video.cpp.
 Windows fullhostlink/runtime validation of this revision remains pending; prior a125c5e fullhostlink success is not removed-path execution coverage.
+
+Private-idle-policy/v1: PyroWave rejects variable_refresh_rate at RTSP preflight; direct borrowed runtime rejection raises shutdown before returning.
+Dedicated event-driven idle and paired-client idle/refresh acceptance remain pending; existing refresh/control/wait behavior is not replaced.
+Windows CI is disabled for this slice; Windows compilation/runtime validation remains pending.

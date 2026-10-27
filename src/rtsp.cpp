@@ -1723,6 +1723,11 @@ namespace rtsp_stream {
       }
       if (pyrowave::is_experimental_video_format(static_cast<std::uint32_t>(monitor.videoFormat))) {
         const auto is_full_range = (monitor.encoderCscMode & 0x1) != 0;
+        if (const auto reason = pyrowave::validate_idle_policy(config::video.variable_refresh_rate)) {
+          BOOST_LOG(warning) << "Rejecting experimental PyroWave video format: "sv << reason;
+          respond(sock, session, &option, 415, "UNSUPPORTED MEDIA TYPE", req->sequenceNumber, {});
+          return;
+        }
         if (const auto reason = pyrowave::validate_cursor_policy(display_cursor, false)) {
           BOOST_LOG(warning) << "Rejecting experimental PyroWave video format: "sv << reason;
           respond(sock, session, &option, 415, "UNSUPPORTED MEDIA TYPE", req->sequenceNumber, {});

@@ -7,6 +7,12 @@
 #include <string_view>
 
 namespace pyrowave {
+  constexpr const char *validate_idle_policy(bool suppress_unchanged) noexcept {
+    if (suppress_unchanged)
+      return "PyroWave requires variable_refresh_rate disabled until paired-client idle/refresh behavior is verified";
+    return nullptr;
+  }
+
   constexpr const char *validate_cursor_policy(bool visible, bool local_mode) noexcept {
     if (visible || local_mode)
       return "PyroWave requires capture_cursor=false and local cursor disabled until paired-client cursor support is verified";

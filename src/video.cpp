@@ -3776,6 +3776,13 @@ namespace video {
       // even when no new frame would be encoded.
       platf::enable_mouse_keys();
 
+      if (direct) {
+        if (const auto reason = pyrowave::validate_idle_policy(config::video.variable_refresh_rate)) {
+          BOOST_LOG(warning) << reason;
+          shutdown_event->raise(true);
+          return;
+        }
+      }
       // If variable refresh rate is enabled, skip encoding when no new frame is available
       // This allows the stream framerate to match the render framerate for VRR support
       // However, if minimum_fps_target is set, or input activity boost is active, we still encode
