@@ -287,10 +287,8 @@ namespace nvenc {
     }
 
 #if NVENCAPI_MAJOR_VERSION * 100 + NVENCAPI_MINOR_VERSION >= 1301
-    // Opt-in only, and probing never takes this path (d3d_nvenc_encode_device_t
-    // forces the device pointer when is_probe): the array path has shipped
-    // ghosted output and stalled on some drivers, so it stays experimental for
-    // real sessions until it is confirmed good on real hardware.
+    // The opt-in array path has shipped ghosted output and stalled on some drivers,
+    // so it stays experimental until confirmed good on real hardware.
     if (encoder_params.cuda_array_input) {
       if (create_and_register_cuda_array_input()) {
         BOOST_LOG(info) << "NvEnc: using block-linear CUDA array input";
