@@ -64,27 +64,17 @@ namespace platf::dxgi {
       current_frame = nullptr;
     }
 
-    const bool use_local_cursor = local_cursor_mode_active();
-    if (use_local_cursor != vdd_local_cursor_mode_active) {
-      // poll_cursor() normally omits an acknowledged shape. Force a refresh
-      // whenever ownership moves between the video overlay and the client.
-      dup.invalidate_cursor_shape();
-      vdd_local_cursor_mode_active = use_local_cursor;
-    }
-
-    if (const auto reason = pyrowave::validate_cursor_policy(cursor_visible, use_local_cursor)) {
+    if (const auto reason = pyrowave::validate_cursor_policy(cursor_visible, local_cursor_mode_active())) {
       BOOST_LOG(error) << "[vdd] "sv << reason;
       return capture_e::error;
     }
-
-    const bool should_poll_cursor = cursor_visible || use_local_cursor;
     std::uint64_t frame_qpc = 0;
     bool cursor_only = false;
     auto status = dup.next_frame(
       timeout,
       &current_frame,
       frame_qpc,
-      should_poll_cursor,
+      false,  // Hidden-only policy: do not poll cursor state.
       cursor_only
     );
     if (status != capture_e::ok) {
@@ -102,18 +92,8 @@ namespace platf::dxgi {
       }
     });
 
-    vdd_capture_t::cursor_snapshot cursor_state;
-    const bool has_cursor_state = should_poll_cursor &&
-                                  (cursor_pipeline_ready || use_local_cursor) &&
-                                  dup.poll_cursor(cursor_state) &&
-                                  cursor_state.valid;
-    if (has_cursor_state && use_local_cursor &&
-        publish_local_cursor(cursor_state)) {
-      dup.acknowledge_cursor_shape(cursor_state.shape_id);
-    }
-
     if (cursor_only) {
-      // Local cursor publication above is the only output; do not pull an image.
+      // Defensive: unsupported cursor-only wakeup has no image; do not pull one.
       return capture_e::timeout;
     }
 
@@ -192,9 +172,6 @@ namespace platf::dxgi {
 
     auto try_borrow_current_frame = [&]() -> capture_e {
       ++vdd_borrow_attempts;
-      if (cursor_visible && !use_local_cursor) {
-        return capture_e::error;
-      }
       if (!vdd_borrow_deferred_images.empty()) {
         return capture_e::timeout;
       }

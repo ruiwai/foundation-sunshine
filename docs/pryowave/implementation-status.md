@@ -179,3 +179,6 @@ This is not complete bounded stop/teardown or hardware proof; Windows compilatio
 Stop-aware-D3D/v1: source-query and return-fence waits check stop; non-completion/cancellation retains the lease.
 Native encode/readback and driver destruction remain noncancellable by this host policy.
 Windows tests for this change have not yet executed; portable checks exclude these paths.
+
+Private-VDD-cursor-shrink/v1: superseded unreachable VDD cursor work removed after pure policy tests.
+Shared cursor/input elsewhere unchanged; Windows validation of this revision remains pending.
