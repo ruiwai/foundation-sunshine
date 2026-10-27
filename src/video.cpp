@@ -1153,7 +1153,6 @@ namespace video {
   };
 
   struct capture_thread_async_ctx_t {
-    std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue;
     std::thread capture_thread;
 
     safe::signal_t reinit_event;
@@ -1169,13 +1168,8 @@ namespace video {
   start_capture_sync(capture_thread_sync_ctx_t &ctx);
   void
   end_capture_sync(capture_thread_sync_ctx_t &ctx);
-  int
-  start_capture_async(capture_thread_async_ctx_t &ctx);
-  void
-  end_capture_async(capture_thread_async_ctx_t &ctx);
 
-  // Keep a reference counter to ensure the capture thread only runs when other threads have a reference to the capture thread
-  auto capture_thread_async = safe::make_shared<capture_thread_async_ctx_t>(start_capture_async, end_capture_async);
+  // Keep the synchronous capture thread active while sessions hold a reference.
   auto capture_thread_sync = safe::make_shared<capture_thread_sync_ctx_t>(start_capture_sync, end_capture_sync);
 
 #ifdef _WIN32
@@ -1812,38 +1806,28 @@ namespace video {
 
   void
   captureThread(
-    std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue,
+    capture_ctx_t capture_ctx,
     sync_util::sync_t<std::weak_ptr<platf::display_t>> &display_wp,
     safe::signal_t &reinit_event,
     const encoder_t *encoder) {
-    std::vector<capture_ctx_t> capture_ctxs;
+    auto &images = capture_ctx.images;
+    auto &config = capture_ctx.config;
 
     auto fg = util::fail_guard([&]() {
-      capture_ctx_queue->stop();
-
-      // Stop all sessions listening to this thread
-      for (auto &capture_ctx : capture_ctxs) {
-        capture_ctx.images->stop();
-      }
-      for (auto &capture_ctx : capture_ctx_queue->unsafe()) {
-        capture_ctx.images->stop();
-      }
+      images->stop();
     });
+    if (!images->running()) {
+      return;
+    }
 
     auto switch_display_event = mail::man->event<int>(mail::switch_display);
     auto active_display_event = mail::man->event<std::string>(mail::active_display);
 
-    // Wait for the initial capture context or a request to stop the queue
-    auto initial_capture_ctx = capture_ctx_queue->pop();
-    if (!initial_capture_ctx) {
-      return;
-    }
-    const bool is_pyrowave = initial_capture_ctx->config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT);
+    const bool is_pyrowave = config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT);
     if (!is_pyrowave && !encoder) {
       return;
     }
     const auto capture_memory_type = is_pyrowave ? platf::mem_type_e::dxgi : encoder->platform_formats->dev_type;
-    capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
 
     // Get all the monitor names now, rather than at boot, to
     // get the most up-to-date list available monitors
@@ -1853,7 +1837,6 @@ namespace video {
 
     // Use client-specified display_name if provided, otherwise use the selected display
     std::string target_display_name;
-    auto config = capture_ctxs.front().config;
     if (!config.display_name.empty()) {
       // config.display_name may be a device ID (e.g., {xxx-xxx-xxx}) rather than display name (e.g., \\.\DISPLAY1)
       // Try to convert device ID to display name first
@@ -1884,8 +1867,11 @@ namespace video {
     }
 
     std::shared_ptr<platf::display_t> disp;
+    if (!images->running()) {
+      return;
+    }
     reset_display(disp, capture_memory_type, target_display_name, config);
-    if (!disp) {
+    if (!images->running() || !disp) {
       return;
     }
     active_display_event->raise(target_display_name);
@@ -1893,33 +1879,6 @@ namespace video {
 
     constexpr auto capture_buffer_size = 12;
     std::list<std::shared_ptr<platf::img_t>> imgs(capture_buffer_size);
-    std::shared_ptr<platf::img_t> latest_captured_img;
-
-    auto append_pending_capture_contexts = [&](const std::shared_ptr<platf::img_t> &initial_img = {}) -> bool {
-      while (capture_ctx_queue->peek()) {
-        auto capture_ctx = capture_ctx_queue->pop();
-        if (!capture_ctx) {
-          return false;
-        }
-
-        // 同一个捕获线程中的会话共享当前显示器。手动切换显示器后加入的会话
-        // 必须继承当前目标，避免后续重新初始化跳回它启动时选择的显示器。
-        capture_ctx->config.display_name = target_display_name;
-        if (initial_img) {
-          // 锁屏或静态桌面可能长时间没有新的 Desktop Duplication 帧。
-          // 新会话必须先取得当前画面，不能一直编码初始化用的黑色占位帧。
-          capture_ctx->images->raise(captured_frame_t {
-            .image = initial_img,
-            .is_replay = true,
-          });
-        }
-        BOOST_LOG(debug) << "Attached streaming session to shared capture display ["sv << target_display_name
-                         << "], reused latest frame: "sv << (initial_img ? "yes"sv : "no"sv);
-        capture_ctxs.emplace_back(std::move(*capture_ctx));
-      }
-
-      return true;
-    };
 
     std::vector<std::optional<std::chrono::steady_clock::time_point>> imgs_used_timestamps;
     const std::chrono::seconds trim_timeot = 3s;
@@ -1971,7 +1930,7 @@ namespace video {
 
     auto pull_free_image_callback = [&](std::shared_ptr<platf::img_t> &img_out) -> bool {
       img_out.reset();
-      while (capture_ctx_queue->running()) {
+      while (images->running()) {
         // pick first allocated but unused
         for (auto it = imgs.begin(); it != imgs.end(); it++) {
           if (*it && it->use_count() == 1) {
@@ -2018,39 +1977,21 @@ namespace video {
     // Capture takes place on this thread
     platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
-    while (capture_ctx_queue->running()) {
+    while (images->running()) {
       bool artificial_reinit = false;
 
       auto push_captured_image_callback = [&](std::shared_ptr<platf::img_t> &&img, bool frame_captured) -> bool {
-        KITTY_WHILE_LOOP(auto capture_ctx = std::begin(capture_ctxs), capture_ctx != std::end(capture_ctxs), {
-          if (!capture_ctx->images->running()) {
-            capture_ctx = capture_ctxs.erase(capture_ctx);
-
-            continue;
-          }
-          ++capture_ctx;
-        })
-
-        if (!capture_ctx_queue->running()) {
-          return false;
-        }
-
-        // 先接入新会话，再分发本次真实画面。若本次只是捕获超时，则给新会话
-        // 补发上一张真实画面，保证它与现有会话看到同一个活动显示器内容。
-        if (!append_pending_capture_contexts(frame_captured ? std::shared_ptr<platf::img_t> {} : latest_captured_img)) {
+        if (!images->running()) {
           return false;
         }
 
         if (frame_captured) {
-          latest_captured_img = img;
-          for (auto &capture_ctx : capture_ctxs) {
-            if (perf::frame_rate_collection_epoch()) {
-              perf::record_capture_frame(capture_ctx.config.perf_session_id, disp->frame_rate_source());
-            }
-            capture_ctx.images->raise(captured_frame_t {
-              .image = img,
-            });
+          if (perf::frame_rate_collection_epoch()) {
+            perf::record_capture_frame(config.perf_session_id, disp->frame_rate_source());
           }
+          images->raise(captured_frame_t {
+            .image = img,
+          });
         }
 
         if (switch_display_event->peek()) {
@@ -2074,7 +2015,6 @@ namespace video {
           reinit_event.raise(true);
 
           // Some classes of images contain references to the display --> display won't delete unless img is deleted
-          latest_captured_img.reset();
           for (auto &img : imgs) {
             img.reset();
           }
@@ -2083,33 +2023,26 @@ namespace video {
           // Wait for the other shared_ptr's of display to be destroyed.
           // New displays will only be created in this thread.
           while (display_wp->use_count() != 1) {
+            if (!images->running()) {
+              return;
+            }
             // Free images that weren't consumed by the encoders. These can reference the display and prevent
             // the ref count from reaching 1. We do this here rather than on the encoder thread to avoid race
             // conditions where the encoding loop might free a good frame after reinitializing if we capture
             // a new frame here before the encoder has finished reinitializing.
-            KITTY_WHILE_LOOP(auto capture_ctx = std::begin(capture_ctxs), capture_ctx != std::end(capture_ctxs), {
-              if (!capture_ctx->images->running()) {
-                capture_ctx = capture_ctxs.erase(capture_ctx);
-                continue;
-              }
-
-              while (capture_ctx->images->peek()) {
-                capture_ctx->images->pop();
-              }
-
-              ++capture_ctx;
-            });
+            // The encoder may consume the peeked frame; don't block waiting for a new one.
+            while (images->running() && images->peek()) {
+              images->pop(0ms);
+            }
 
             std::this_thread::sleep_for(20ms);
           }
 
-          // 等待旧显示器释放期间，最后一个旧会话可能退出，同时新会话已经加入队列。
-          // 先接入新上下文；若仍无会话则安全结束捕获线程，不能访问空容器的 front()。
-          if (!append_pending_capture_contexts() || capture_ctxs.empty()) {
+          if (!images->running()) {
             return;
           }
 
-          while (capture_ctx_queue->running()) {
+          while (images->running()) {
             // Release the display before reenumerating displays, since some capture backends
             // only support a single display session per device/application.
             disp.reset();
@@ -2125,7 +2058,6 @@ namespace video {
             }
 
             // Use client-specified display_name if provided (only for auto-reinit, not manual switch)
-            auto &config = capture_ctxs.front().config;
             target_display_name = display_names[display_p];
             if (!user_switched && !config.display_name.empty()) {
               // config.display_name may be a device ID - convert to display name
@@ -2150,19 +2082,20 @@ namespace video {
             }
 
             if (user_switched) {
-              for (auto &capture_ctx : capture_ctxs) {
-                capture_ctx.config.display_name = target_display_name;
-              }
+              config.display_name = target_display_name;
             }
 
             // reset_display() will sleep between retries
             reset_display(disp, capture_memory_type, target_display_name, config);
+            if (!images->running()) {
+              return;
+            }
             if (disp) {
               active_display_event->raise(target_display_name);
               break;
             }
           }
-          if (!disp) {
+          if (!images->running() || !disp) {
             return;
           }
 
@@ -4227,25 +4160,28 @@ namespace video {
       shutdown_event->raise(true);
     });
 
-    auto ref = capture_thread_async.ref();
-    if (!ref) {
+    capture_thread_async_ctx_t capture_ctx;
+    capture_ctx.encoder_p = chosen_encoder;
+
+    if (config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) && !capture_ctx.encoder_p) {
       return;
     }
 
-    if (config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT) && !ref->encoder_p) {
-      return;
-    }
-
-    // Stop images before ref destruction can join the last capture worker.
-    auto images_guard = util::fail_guard([&]() {
+    // Stop and join the worker before its stack-owned state is destroyed.
+    auto worker_guard = util::fail_guard([&]() {
       images->stop();
+      if (capture_ctx.capture_thread.joinable()) {
+        capture_ctx.capture_thread.join();
+      }
     });
 
-    ref->capture_ctx_queue->raise(capture_ctx_t { images, config });
-
-    if (!ref->capture_ctx_queue->running()) {
-      return;
-    }
+    capture_ctx.capture_thread = std::thread {
+      captureThread,
+      capture_ctx_t { images, config },
+      std::ref(capture_ctx.display_wp),
+      std::ref(capture_ctx.reinit_event),
+      capture_ctx.encoder_p
+    };
 
     int frame_nr = 1;
 
@@ -4272,7 +4208,7 @@ namespace video {
 
     while (!shutdown_event->peek() && images->running()) {
       // Wait for the main capture event when the display is being reinitialized
-      if (ref->reinit_event.peek()) {
+      if (capture_ctx.reinit_event.peek()) {
         BOOST_LOG(debug) << "[Display] Reinit event detected, waiting for display ready...";
         std::this_thread::sleep_for(20ms);
         continue;
@@ -4281,13 +4217,13 @@ namespace video {
       // Wait for the display to be ready
       std::shared_ptr<platf::display_t> display;
       {
-        auto lg = ref->display_wp.lock();
-        if (ref->display_wp->expired()) {
+        auto lg = capture_ctx.display_wp.lock();
+        if (capture_ctx.display_wp->expired()) {
           BOOST_LOG(verbose) << "[Display] Display object expired, waiting for reinit...";
           // std::this_thread::sleep_for(20ms);
           continue;
         }
-        display = ref->display_wp->lock();
+        display = capture_ctx.display_wp->lock();
       }
 
       // Detect display resolution changes (e.g., rotation causing width/height swap)
@@ -4384,7 +4320,7 @@ namespace video {
         }
       }
 
-      const auto *encoder = is_pyrowave ? nullptr : ref->encoder_p;
+      const auto *encoder = is_pyrowave ? nullptr : capture_ctx.encoder_p;
       std::unique_ptr<platf::encode_device_t> encode_device;
       std::function<std::unique_ptr<encode_session_t>()> session_factory;
       std::function<void()> backend_failure_handler;
@@ -4503,7 +4439,7 @@ namespace video {
         mail, images,
         config, display,
         std::move(encode_device),
-        ref->reinit_event, encoder,
+        capture_ctx.reinit_event, encoder,
         channel_data, dynamic_param_events,
         std::move(session_factory), std::move(backend_failure_handler));
     }
@@ -5283,30 +5219,6 @@ namespace video {
     return ctx_buf;
   }
 #endif
-
-  int
-  start_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
-    capture_thread_ctx.encoder_p = chosen_encoder;
-    capture_thread_ctx.reinit_event.reset();
-
-    capture_thread_ctx.capture_ctx_queue = std::make_shared<safe::queue_t<capture_ctx_t>>(30);
-
-    capture_thread_ctx.capture_thread = std::thread {
-      captureThread,
-      capture_thread_ctx.capture_ctx_queue,
-      std::ref(capture_thread_ctx.display_wp),
-      std::ref(capture_thread_ctx.reinit_event),
-      capture_thread_ctx.encoder_p
-    };
-
-    return 0;
-  }
-  void
-  end_capture_async(capture_thread_async_ctx_t &capture_thread_ctx) {
-    capture_thread_ctx.capture_ctx_queue->stop();
-
-    capture_thread_ctx.capture_thread.join();
-  }
 
   int
   start_capture_sync(capture_thread_sync_ctx_t &ctx) {
