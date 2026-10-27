@@ -585,6 +585,9 @@ target_sources(${PROJECT_NAME} PRIVATE
         ${SUNSHINE_SOURCES}
         ${CMAKE_SOURCE_DIR}/third-party/moonlight-common-c/src/PyrowaveReassembly.c)
 if (WIN32)
+    set(TEST_NATIVE_ENCODER_SOURCES ${NVENC_SOURCES} ${AMF_SOURCES})
+    list(REMOVE_ITEM TEST_NATIVE_ENCODER_SOURCES "${CMAKE_SOURCE_DIR}/src/nvenc/frame_budget.cpp")
+    target_sources(${PROJECT_NAME} PRIVATE ${TEST_NATIVE_ENCODER_SOURCES})
     target_link_libraries(${PROJECT_NAME} PRIVATE Pyrowave::Runtime sunshine_windows_resources)
 endif ()
 if (TARGET sunshine_rtx_video_adapter)

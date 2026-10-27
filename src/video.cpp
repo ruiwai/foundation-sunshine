@@ -48,7 +48,6 @@ extern "C" {
 #include "video_probe.h"
 
 #ifdef _WIN32
-  #include "nvenc/win/nvenc_dynamic_factory.h"
   #include "platform/windows/pyrowave/gpu_encoder.h"
   #include "platform/windows/pyrowave/color_metadata.h"
   #include "platform/windows/display.h"
@@ -4871,14 +4870,6 @@ namespace video {
       active_encoder_for_status.store(chosen_encoder, std::memory_order_release);
       return 0;
     }
-
-#ifdef _WIN32
-    // Reuse CUDA interop across this probe's short-lived 10-bit 4:4:4
-    // candidates, but release it on every exit when no real encoder needs it.
-    // The token itself does not initialize CUDA or create a GPU context.
-    const auto nvenc_factory = nvenc::nvenc_dynamic_factory::get();
-    const auto cuda_probe_contexts = nvenc_factory ? nvenc_factory->retain_cuda_interop_contexts() : nullptr;
-#endif
 
     const auto configured_output_name = target ? target->output_name : config::video.output_name;
     const bool target_requires_exact_resolution = target && target->policy == probe_target_policy_e::exact;

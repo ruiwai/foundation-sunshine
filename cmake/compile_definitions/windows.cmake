@@ -221,8 +221,7 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/Util.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/include/ViGEm/km/BusShared.h"
         ${NVPREFS_FILES}
-        ${NVENC_SOURCES}
-        ${AMF_SOURCES})
+        "${CMAKE_SOURCE_DIR}/src/nvenc/frame_budget.cpp")
 
 list(PREPEND PLATFORM_LIBRARIES
         advapi32
