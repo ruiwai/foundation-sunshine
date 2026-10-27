@@ -498,6 +498,8 @@ namespace platf::dxgi {
    */
   class display_ddup_vram_t: public display_vram_t {
   public:
+    std::shared_ptr<img_t>
+    alloc_img() override;
     int
     init(const ::video::config_t &config, const std::string &display_name);
     capture_e

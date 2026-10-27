@@ -414,7 +414,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="mb-3" v-if="platform === 'windows'">
-      <p class="form-text">PyroWave supports host-composited cursor capture using an extra GPU copy and requires VDD cursor metadata. Client-side local cursor rendering remains unsupported. Hardware correctness and performance are unverified.</p>
+      <p class="form-text">PyroWave supports host-composited cursor capture using an extra GPU copy. Auto/DDX uses the Windows cursor; direct VDD requires driver cursor metadata. Client-side local cursor rendering remains unsupported. Hardware correctness and performance are unverified.</p>
     </div>
 
     <div

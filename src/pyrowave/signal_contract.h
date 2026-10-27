@@ -23,9 +23,14 @@ namespace pyrowave {
   constexpr const char *validate_capture_backend(bool dxgi, std::string_view backend) noexcept {
     if (!dxgi)
       return "PyroWave requires DXGI capture; select a DXGI hardware device";
-    if (!backend.empty() && backend != "vdd")
-      return "PyroWave supports VDD-only capture; select auto (empty) or vdd";
+    if (!backend.empty() && backend != "ddx" && backend != "vdd")
+      return "PyroWave supports Desktop Duplication or direct VDD capture; select auto (empty), ddx or vdd";
     return nullptr;
+  }
+
+  // Call only after backend validation; auto uses Desktop Duplication without a VDD probe.
+  constexpr bool uses_direct_vdd_capture(std::string_view backend) noexcept {
+    return backend == "vdd";
   }
 
   constexpr const char *validate_capture_target(std::string_view target) noexcept {

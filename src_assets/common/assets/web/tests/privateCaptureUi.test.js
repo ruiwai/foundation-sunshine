@@ -19,10 +19,12 @@ const layout = elements(capture).find((node) => node.tag === 'PlatformLayout')
 const slot = (name) => elements(layout).find((node) => directive(node, 'slot', name))
 const values = (node) => elements(node).filter((child) => child.tag === 'option').map((child) => attr(child, 'value'))
 
-test('Windows capture exposes only VDD plus the shared Auto option', () => {
-  assert.deepEqual(values(slot('windows')), ['vdd'])
+test('Windows capture exposes exactly DDX and VDD plus the shared Auto option', () => {
+  assert.deepEqual(values(slot('windows')), ['ddx', 'vdd'])
   assert.deepEqual(values(capture), [''])
   assert.match(elements(capture)[0].loc.source, /\$t\('_common.autodetect'\)/)
+  assert.equal(elements(slot('windows'))[0].children[0].content, 'Desktop Duplication (DDX)')
+  assert.match(elements(slot('windows'))[1].loc.source, /\$t\('config.capture_vdd_direct'\)/)
   assert.equal(directive(capture, 'model')?.exp.content, 'config.capture')
   assert.equal(directive(layout, 'bind', 'platform')?.exp.content, 'platform')
 })
@@ -40,13 +42,21 @@ test('obsolete WGC service controls and AMD warnings are absent', () => {
 })
 
 // Static production-source contracts, not browser/mount integration coverage.
-test('Windows Auto and VDD share the prerequisite and explanatory state', () => {
-  assert.match(script, /const isVDDCaptureSelected = computed\(\(\) => \{\s*return props.platform === 'windows' && \(config.value.capture === '' \|\| config.value.capture === 'vdd'\)\s*\}\)/)
-  const notice = descendants(ast).find((node) => node.tag === 'VddPrerequisiteNotice')
+test('only explicit Windows VDD activates prerequisites; Auto explains DDX independence', () => {
+  assert.match(script, /const isVDDCaptureSelected = computed\(\(\) => \{\s*return props.platform === 'windows' && config.value.capture === 'vdd'\s*\}\)/)
+  const notices = descendants(ast).filter((node) => node.tag === 'VddPrerequisiteNotice')
+  assert.equal(notices.length, 1)
+  const [notice] = notices
   assert.equal(directive(notice, 'bind', 'active')?.exp.content, 'isVDDCaptureSelected')
   const explanation = descendants(ast).find((node) => node.tag === 'span' &&
     directive(node, 'if')?.exp.content === 'isVDDCaptureSelected')
-  assert.match(explanation.loc.source, /config.capture_vdd_direct_desc/)
+  assert.equal(explanation.children.filter((node) => node.type === 2).map((node) => node.content).join('').trim(),
+    'Explicit VDD direct capture requires driver frame export; no capture fallback.')
+  const autoNotice = descendants(ast).find((node) => node.tag === 'span' &&
+    directive(node, 'if')?.exp.content === "platform === 'windows'")
+  assert.equal(autoNotice.children[0].content,
+    'Auto uses Desktop Duplication (DDX) on the selected display; no driver frame export is required.')
+  assert.doesNotMatch(source, /config.capture_vdd_direct_desc/)
 })
 
 test('saved capture is not normalized and mounting does not write configuration', () => {

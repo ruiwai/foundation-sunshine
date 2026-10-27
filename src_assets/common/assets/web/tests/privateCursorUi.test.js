@@ -35,7 +35,7 @@ test('Windows notice accurately describes host cursor support without a disable 
   assert.deepEqual(guards([...ancestors, notice]), ["platform === 'windows'"])
   const [message] = elements(notice)
   assert.deepEqual(elements(notice).map((node) => node.tag), ['p'])
-  assert.equal(text(message), 'PyroWave supports host-composited cursor capture using an extra GPU copy and requires VDD cursor metadata. Client-side local cursor rendering remains unsupported. Hardware correctness and performance are unverified.')
+  assert.equal(text(message), 'PyroWave supports host-composited cursor capture using an extra GPU copy. Auto/DDX uses the Windows cursor; direct VDD requires driver cursor metadata. Client-side local cursor rendering remains unsupported. Hardware correctness and performance are unverified.')
   assert.equal(elements(message).length, 0)
   assert.ok(message.props.every((prop) => prop.type === 6))
   assert.doesNotMatch(descriptor.template.content, /Disable cursor capture|requires hidden cursor capture/)

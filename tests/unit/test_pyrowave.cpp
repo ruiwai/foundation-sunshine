@@ -400,21 +400,34 @@ namespace {
 
   static_assert(noexcept(pyrowave::validate_capture_backend(true, "vdd")));
   static_assert(pyrowave::validate_capture_backend(true, "") == nullptr);
+  static_assert(pyrowave::validate_capture_backend(true, "ddx") == nullptr);
   static_assert(pyrowave::validate_capture_backend(true, "vdd") == nullptr);
   static_assert(pyrowave::validate_capture_backend(false, "") != nullptr);
+  static_assert(pyrowave::validate_capture_backend(false, "ddx") != nullptr);
   static_assert(pyrowave::validate_capture_backend(false, "vdd") != nullptr);
 
-  TEST(PyrowaveCaptureBackendTest, AutoAndVddRequireDxgi) {
-    for (const auto backend : { "", "vdd" }) {
+  TEST(PyrowaveCaptureBackendTest, AutoDdxAndVddRequireDxgi) {
+    for (const auto backend : { "", "ddx", "vdd" }) {
       EXPECT_EQ(pyrowave::validate_capture_backend(true, backend), nullptr);
       EXPECT_NE(pyrowave::validate_capture_backend(false, backend), nullptr);
     }
   }
 
   TEST(PyrowaveCaptureBackendTest, RejectsUnsupportedBackends) {
-    for (const auto backend : { "ddx", "wgc", "amd", "unknown", "VDD" }) {
+    for (const auto backend : { "wgc", "amd", "unknown", "VDD", "DDX" }) {
       EXPECT_NE(pyrowave::validate_capture_backend(true, backend), nullptr);
       EXPECT_NE(pyrowave::validate_capture_backend(false, backend), nullptr);
+    }
+  }
+
+  TEST(PyrowaveCaptureBackendTest, OnlyExplicitVddUsesDirectCapture) {
+    static_assert(noexcept(pyrowave::uses_direct_vdd_capture("vdd")));
+    static_assert(!pyrowave::uses_direct_vdd_capture(""));
+    static_assert(!pyrowave::uses_direct_vdd_capture("ddx"));
+    static_assert(pyrowave::uses_direct_vdd_capture("vdd"));
+    for (const auto backend : { "", "ddx", "vdd" }) {
+      ASSERT_EQ(pyrowave::validate_capture_backend(true, backend), nullptr);
+      EXPECT_EQ(pyrowave::uses_direct_vdd_capture(backend), std::string_view(backend) == "vdd");
     }
   }
 

@@ -62,7 +62,8 @@ using namespace std::literals;
 namespace video {
 
   namespace {
-    constexpr auto private_host_wait_timeout = 5s;
+    // Allow explicit VDD's two 8-second init attempts; host polls are bounded, driver calls are not.
+    constexpr auto private_host_wait_timeout = 20s;
     std::mutex hdr_pipeline_status_mutex;
     std::map<std::uint64_t, hdr_pipeline_status_t> hdr_pipeline_statuses;
     std::atomic<std::uint64_t> next_hdr_pipeline_status_id { 1 };
@@ -4838,7 +4839,7 @@ namespace video {
     if (const auto reason = pyrowave::validate_capture_backend(true, config::video.capture)) {
       last_encoder_probe_result = {
         probe_error_e::configured_encoder_unavailable, reason,
-        "Select auto (empty) or vdd capture; this Windows build supports PyroWave VDD-only capture."
+        "Select auto (empty) or ddx capture for Desktop Duplication compatibility, or explicit vdd for direct VDD capture."
       };
       return -1;
     }

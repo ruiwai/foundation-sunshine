@@ -10,7 +10,7 @@ const props = defineProps(['platform', 'config', 'global_prep_cmd'])
 const config = ref(props.config)
 
 const isVDDCaptureSelected = computed(() => {
-  return props.platform === 'windows' && (config.value.capture === '' || config.value.capture === 'vdd')
+  return props.platform === 'windows' && config.value.capture === 'vdd'
 })
 
 // === 编解码器策略（HEVC + AV1 整合 UI） ===
@@ -156,15 +156,17 @@ const hdrToggleDisabled = computed(() => codecStrategy.value !== 'modern')
             <option value="x11">X11</option>
           </template>
           <template #windows>
+            <option value="ddx">Desktop Duplication (DDX)</option>
             <option value="vdd">{{ $t('config.capture_vdd_direct') }}</option>
           </template>
         </PlatformLayout>
       </select>
       <div class="form-text">
-        {{ $t('config.capture_desc') }}
+        <span v-if="platform === 'windows'">Auto uses Desktop Duplication (DDX) on the selected display; no driver frame export is required.</span>
+        <span v-else>{{ $t('config.capture_desc') }}</span>
         <span v-if="isVDDCaptureSelected" class="status-note is-info mt-2">
           <i class="fas fa-info-circle me-1"></i>
-          {{ $t('config.capture_vdd_direct_desc') }}
+          Explicit VDD direct capture requires driver frame export; no capture fallback.
         </span>
       </div>
       <VddPrerequisiteNotice :active="isVDDCaptureSelected" />

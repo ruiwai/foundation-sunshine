@@ -6,20 +6,24 @@ and [deferred hardware validation](../../docs/pyrowave-optimizations/hardware-va
 
 - Windows Intel UHD770 only: capture/D3D11/Vulkan must share the adapter LUID;
   identity is insufficient without actual feature, format, import and synchronization checks.
-- One video session, with a per-session capture worker. Mandatory VDD capture
+- Auto (empty) or `ddx` uses Desktop Duplication on the selected display, with an extra GPU copy
+  and no direct VDD driver frame-export dependency. Explicit `vdd` requires driver frame export.
+- One video session, with a per-session capture worker. Capture
   -> fused conversion into shared R8 Y/U/V planes in a two-slot ring -> mandatory FP16 compute.
 - Host cursor capture (`capture_cursor=true`) composites onto an owned RGB texture using an extra GPU copy;
-  it requires VDD cursor metadata. Hidden capture (`capture_cursor=false`) uses the direct borrowed texture path.
+  Auto/DDX uses the Windows cursor; direct VDD requires driver cursor metadata.
+  Explicit `vdd` is the optimized direct path: hidden capture (`capture_cursor=false`) borrows the texture;
+  visible host cursor capture uses an owned cursor copy.
   Host cursor hardware correctness and performance remain unverified.
 - SDR 8-bit BT.709 YUV420 only, positive even dimensions, equal capture/output size.
 - Reject HDR, scaling, rotation, filters and unverified idle policies;
   client-side local cursor rendering remains unsupported and must be disabled; client capabilities are not assumed.
-  Only empty/exact `display` targets and Auto/VDD capture are supported; reject other targets/backends.
+  Only empty/exact `display` targets and Auto/DDX/VDD capture are supported; reject other targets/backends.
 - No CPU staging, other-codec (including H.264), or capture fallback.
 - Existing refresh/control, security, audio/microphone and input behavior is preserved;
   wire protocol/API information below is retained, not a claim of current client capabilities.
 - Encoded-bitstream CPU readback remains: this is not end-to-end zero-copy.
-- Host startup/reinit/reference polling timeouts are 5 s, pending new Windows CI;
+- Host startup/reinit/reference polling timeouts are 20 s, pending new Windows CI;
   driver calls, destruction and worker join are not bounded by these polling deadlines.
 - Known FP16 numerical failure is waived, NOT a pass; hardware/paired-client validation
   is deferred. No new Windows CI pass, hardware acceptance or measured speedup is claimed.

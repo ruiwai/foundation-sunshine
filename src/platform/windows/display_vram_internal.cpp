@@ -34,14 +34,14 @@ namespace platf::dxgi {
   is_pyrowave_source_valid(const img_d3d_t &img, const D3D11_TEXTURE2D_DESC &desc,
     std::uint64_t adapter_luid, std::uint64_t generation, UINT width, UINT height) noexcept {
     const auto &frame = img.frame_desc;
-    const bool borrowed = !img.pyrowave_cursor_composited && img.borrowed_vdd_texture &&
+    const bool borrowed = !img.pyrowave_ddx_frame && !img.pyrowave_cursor_composited && img.borrowed_vdd_texture &&
                           img.borrowed_vdd_frame && frame.borrowed &&
                           img.encoder_acquire_key == 2 && img.producer_release_key == 0;
-    const bool composited = img.pyrowave_cursor_composited && !img.borrowed_vdd_texture &&
-                            !img.borrowed_vdd_frame && !frame.borrowed &&
-                            img.encoder_acquire_key == 0 && img.encoder_release_key == 0 &&
-                            img.producer_release_key == 0;
-    return !img.blank && !img.dummy && (borrowed || composited) &&
+    const bool owned = (img.pyrowave_ddx_frame != img.pyrowave_cursor_composited) &&
+                       !img.borrowed_vdd_texture && !img.borrowed_vdd_frame && !frame.borrowed &&
+                       img.encoder_acquire_key == 0 && img.encoder_release_key == 0 &&
+                       img.producer_release_key == 0;
+    return !img.blank && !img.dummy && (borrowed || owned) &&
            !img.linear_gamma && frame.adapter_luid == adapter_luid &&
            frame.source_generation == generation && frame.encoding == pixel_encoding_class_e::unorm8 &&
            frame.domain == frame_domain_e::sdr_rec709 &&

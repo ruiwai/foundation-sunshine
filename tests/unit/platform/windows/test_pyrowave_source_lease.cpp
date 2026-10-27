@@ -108,6 +108,7 @@ namespace {
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     reject(img->blank, true); reject(img->dummy, true);
     reject(img->pyrowave_cursor_composited, true);
+    reject(img->pyrowave_ddx_frame, true);
     reject(img->borrowed_vdd_texture, false); reject(img->borrowed_vdd_frame, false);
     reject(img->linear_gamma, true); reject(frame.borrowed, false);
     reject(frame.adapter_luid, std::uint64_t {18}); reject(frame.adapter_luid, std::uint64_t {0});
@@ -161,6 +162,7 @@ namespace {
     desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; EXPECT_TRUE(valid());
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     reject(img.pyrowave_cursor_composited, false); // Arbitrary owned images are not sources.
+    reject(img.pyrowave_ddx_frame, true); // Owned provenance must not be mixed.
     reject(img.borrowed_vdd_texture, true); reject(img.borrowed_vdd_frame, true);
     reject(frame.borrowed, true);
     img.borrowed_vdd_texture = img.borrowed_vdd_frame = frame.borrowed = true;
@@ -184,6 +186,63 @@ namespace {
     EXPECT_TRUE(valid());
     img.pyrowave_cursor_composited = false; // Successful conversion consumes provenance.
     EXPECT_FALSE(valid());
+  }
+
+  TEST(PyrowaveSourceAdmission, OwnedDdxIdentityAllowsRepeatedAdmissionWithoutFreshCursorMarker) {
+    img_d3d_t img;
+    auto &frame = img.frame_desc;
+    img.blank = false;
+    img.pyrowave_ddx_frame = true;
+    frame.adapter_luid = 17; frame.source_generation = 23;
+    frame.encoding = platf::pixel_encoding_class_e::unorm8;
+    frame.domain = platf::frame_domain_e::sdr_rec709;
+    D3D11_TEXTURE2D_DESC desc {};
+    desc.Width = 1920; desc.Height = 1080;
+    desc.SampleDesc.Count = desc.ArraySize = desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    const auto valid = [&] {
+      return platf::dxgi::is_pyrowave_source_valid(img, desc, 17, 23, 1920, 1080);
+    };
+    const auto reject = [&](auto &field, auto bad) {
+      const auto saved = field;
+      field = bad;
+      EXPECT_FALSE(valid());
+      field = saved;
+      EXPECT_TRUE(valid());
+    };
+    EXPECT_TRUE(valid()); EXPECT_TRUE(valid()); // Admission is not single-use freshness.
+    EXPECT_TRUE(img.pyrowave_ddx_frame); EXPECT_FALSE(img.pyrowave_cursor_composited);
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM; EXPECT_TRUE(valid());
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    reject(img.pyrowave_ddx_frame, false); // Unmarked owned images are not admitted.
+    reject(img.pyrowave_cursor_composited, true); // XOR, not interchangeable mixed markers.
+    reject(img.borrowed_vdd_texture, true); reject(img.borrowed_vdd_frame, true);
+    reject(frame.borrowed, true);
+    img.borrowed_vdd_texture = img.borrowed_vdd_frame = frame.borrowed = true;
+    img.encoder_acquire_key = 2;
+    EXPECT_FALSE(valid()); // Even complete borrowed VDD provenance cannot carry DDX identity.
+    img.borrowed_vdd_texture = img.borrowed_vdd_frame = frame.borrowed = false;
+    img.encoder_acquire_key = 0;
+    for (UINT64 bad : {UINT64 {1}, UINT64 {2}}) {
+      reject(img.encoder_acquire_key, bad); reject(img.encoder_release_key, bad);
+      reject(img.producer_release_key, bad);
+    }
+    reject(img.blank, true); reject(img.dummy, true); reject(img.linear_gamma, true);
+    reject(frame.adapter_luid, std::uint64_t {18}); reject(frame.adapter_luid, std::uint64_t {0});
+    reject(frame.source_generation, std::uint64_t {24}); reject(frame.source_generation, std::uint64_t {0});
+    reject(frame.encoding, platf::pixel_encoding_class_e::float16);
+    for (auto bad : {platf::frame_domain_e::unknown, platf::frame_domain_e::linear_scrgb,
+                    platf::frame_domain_e::pq_bt2020, platf::frame_domain_e::hlg_bt2020})
+      reject(frame.domain, bad);
+    reject(desc.Width, UINT {0}); reject(desc.Width, UINT {1918});
+    reject(desc.Height, UINT {0}); reject(desc.Height, UINT {1078});
+    for (UINT bad : {0u, 2u}) {
+      reject(desc.SampleDesc.Count, bad); reject(desc.ArraySize, bad); reject(desc.MipLevels, bad);
+    }
+    for (auto bad : {DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB})
+      reject(desc.Format, bad);
+    EXPECT_TRUE(valid()); EXPECT_TRUE(img.pyrowave_ddx_frame);
   }
 
   TEST_F(SourceLease, AlreadyAcquiredReleaseIsExactlyOnce) {

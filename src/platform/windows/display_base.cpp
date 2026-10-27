@@ -1291,7 +1291,16 @@ namespace platf {
       BOOST_LOG(error) << reason;
       return nullptr;
     }
-    auto disp = std::make_shared<dxgi::display_vdd_vram_t>();
+    const bool direct_vdd = pyrowave::uses_direct_vdd_capture(capture_backend);
+    BOOST_LOG(info) << "PyroWave selected capture backend: " << (direct_vdd ? "vdd (direct-only)" : "ddx (Desktop Duplication)");
+    if (direct_vdd) {
+      auto disp = std::make_shared<dxgi::display_vdd_vram_t>();
+      if (disp->init(config, display_name) == 0) {
+        return disp;
+      }
+      return nullptr;
+    }
+    auto disp = std::make_shared<dxgi::display_ddup_vram_t>();
     if (disp->init(config, display_name) == 0) {
       return disp;
     }
