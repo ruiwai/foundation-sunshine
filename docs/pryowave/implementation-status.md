@@ -190,3 +190,7 @@ Windows fullhostlink/runtime validation of this revision remains pending; prior 
 Private-idle-policy/v1: PyroWave rejects variable_refresh_rate at RTSP preflight; direct borrowed runtime rejection raises shutdown before returning.
 Dedicated event-driven idle and paired-client idle/refresh acceptance remain pending; existing refresh/control/wait behavior is not replaced.
 Windows CI is disabled for this slice; Windows compilation/runtime validation remains pending.
+
+Windows-private-capture-factory/v1: superseded legacy factory dispatch deleted; only PyroWave VDD remains.
+Secure-desktop crash-backup recovery retained before every factory attempt.
+Windows CI is disabled for this slice; Windows compilation/runtime validation remains pending.

@@ -1273,94 +1273,24 @@ namespace platf {
    */
   std::shared_ptr<display_t>
   display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config) {
-    // Recover ConsentPromptBehaviorAdmin if Sunshine previously crashed during WGC capture (runs only once)
     dxgi::recover_secure_desktop();
+    cursor_channel::set_producer_available(false);
 
-    auto try_init = [&](auto disp) -> std::shared_ptr<display_t> {
-      if (!disp->init(config, display_name)) {
-        return disp;
-      }
+    if (!pyrowave::is_experimental_video_format(config.videoFormat)) {
+      BOOST_LOG(error) << "This Windows build supports PyroWave only; no legacy capture is available";
       return nullptr;
-    };
-
-    // Build list of capture methods to try
-    std::vector<std::string> try_types;
+    }
 
     const auto capture_backend = config.capture_backend_override.empty() ? config::video.capture : config.capture_backend_override;
-
-    if (pyrowave::is_experimental_video_format(config.videoFormat)) {
-      cursor_channel::set_producer_available(false);
-      if (const auto reason = pyrowave::validate_capture_backend(hwdevice_type == mem_type_e::dxgi, capture_backend)) {
-        BOOST_LOG(error) << reason;
-        return nullptr;
-      }
-      return try_init(std::make_shared<dxgi::display_vdd_vram_t>());
+    if (const auto reason = pyrowave::validate_capture_backend(hwdevice_type == mem_type_e::dxgi, capture_backend)) {
+      BOOST_LOG(error) << reason;
+      return nullptr;
     }
 
-    if (capture_backend.empty()) {
-      if (is_running_as_system_user) {
-        // WGC is not available in service mode
-        try_types = { "ddx" };
-        BOOST_LOG(info) << "Running in service mode, using DDX capture (WGC not available in services)"sv;
-      }
-      else {
-        try_types = { "ddx", "wgc" };
-      }
+    auto disp = std::make_shared<dxgi::display_vdd_vram_t>();
+    if (disp->init(config, display_name) == 0) {
+      return disp;
     }
-    else if (capture_backend == "wgc" && is_running_as_system_user) {
-      // WGC explicitly requested but unavailable in service mode
-      BOOST_LOG(warning) << "WGC capture is not available in service mode. Automatically switching to DDX capture."sv;
-      try_types = { "ddx" };
-    }
-    else if (capture_backend == "vdd") {
-      // An explicit VDD selection must fail closed.
-      try_types = { "vdd" };
-    }
-    else {
-      try_types = { capture_backend };
-    }
-
-    for (const auto &type : try_types) {
-      std::shared_ptr<display_t> ret;
-
-      if (type == "amd" && hwdevice_type == mem_type_e::dxgi) {
-        ret = try_init(std::make_shared<dxgi::display_amd_vram_t>());
-      }
-      else if (type == "vdd" && hwdevice_type == mem_type_e::dxgi) {
-        // ZakoVDD direct shared-texture capture. Works in SYSTEM context and
-        // before user logon. Only valid when the selected display is a VDD
-        // virtual monitor.
-        ret = try_init(std::make_shared<dxgi::display_vdd_vram_t>());
-      }
-      else if (type == "ddx") {
-        if (hwdevice_type == mem_type_e::dxgi) {
-          ret = try_init(std::make_shared<dxgi::display_ddup_vram_t>());
-        }
-        else if (hwdevice_type == mem_type_e::system) {
-          ret = try_init(std::make_shared<dxgi::display_ddup_ram_t>());
-        }
-      }
-      else if (type == "wgc" && !is_running_as_system_user) {
-        if (hwdevice_type == mem_type_e::dxgi) {
-          ret = try_init(std::make_shared<dxgi::display_wgc_vram_t>());
-        }
-        else if (hwdevice_type == mem_type_e::system) {
-          ret = try_init(std::make_shared<dxgi::display_wgc_ram_t>());
-        }
-      }
-
-      if (ret) {
-        cursor_channel::set_producer_available(type == "ddx" || type == "vdd");
-        return ret;
-      }
-
-      if (type == "vdd") {
-        BOOST_LOG(warning) << "[vdd] direct capture initialization failed"sv;
-      }
-    }
-
-    BOOST_LOG(error) << "Failed to create display for: " << display_name;
-    cursor_channel::set_producer_available(false);
     return nullptr;
   }
 
