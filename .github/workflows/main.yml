@@ -38,7 +38,9 @@ on:
           - 'OFF'
 
 concurrency:
-  group: '${{ github.workflow }}-${{ github.ref }}'
+  # Preserve async full-test evidence across later manual builds
+  # (focused or full) and branch runs by isolating manual run IDs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 # The pinned LizardByte release action still composes a Node.js 20 action.
