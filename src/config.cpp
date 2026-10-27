@@ -31,6 +31,7 @@
 
 #include "display_device/parsed_config.h"
 #include "platform/common.h"
+#include "pyrowave/signal_contract.h"
 
 #ifdef _WIN32
   #include <shellapi.h>
@@ -492,7 +493,7 @@ namespace config {
     {},  // encoder
     {},  // adapter_name
     {},  // output_name
-    {},  // capture_target (default: empty, will be set to "display" in apply_config)
+    {},  // capture_target (empty means display)
     {},  // window_title
     true,  // capture_cursor (default: composite the host mouse cursor)
     (int) display_device::parsed_config_t::device_prep_e::no_operation,  // display_device_prep
@@ -1189,6 +1190,7 @@ namespace config {
       modified_config_settings[name] = val;
     }
 
+#ifndef _WIN32
     int_f(vars, "qp", video.qp);
     int_f(vars, "min_threads", video.min_threads);
     int_between_f(vars, "hevc_mode", video.hevc_mode, { 0, 3 });
@@ -1212,12 +1214,14 @@ namespace config {
     generic_f(vars, "nvenc_rate_control", video.nv.rate_control_mode, nv::rate_control_mode_from_view);
     int_between_f(vars, "nvenc_target_quality", video.nv.target_quality, { 0, 63 });
     bool_f(vars, "nvenc_cuda_array_input", video.nv.cuda_array_input);
+#endif
     bool_f(vars, "nvenc_realtime_hags", video.nv_realtime_hags);
     bool_f(vars, "nvenc_manage_driver_settings", video.nv_manage_driver_settings);
     bool_f(vars, "nvenc_vdd_force_vsync", video.nv_vdd_force_vsync);
     bool_f(vars, "nvenc_opengl_vulkan_on_dxgi", video.nv_opengl_vulkan_on_dxgi);
     bool_f(vars, "nvenc_latency_over_power", video.nv_sunshine_high_power_mode);
 
+#ifndef _WIN32
 #if !defined(__ANDROID__) && !defined(__APPLE__)
     video.nv_legacy.preset = video.nv.quality_preset + 11;
     video.nv_legacy.multipass = video.nv.two_pass == nvenc::nvenc_two_pass::quarter_resolution ? NV_ENC_TWO_PASS_QUARTER_RESOLUTION :
@@ -1306,21 +1310,11 @@ namespace config {
     int_f(vars, "vt_realtime", video.vt.vt_realtime, vt::rt_from_view);
 
     bool_f(vars, "vaapi_strict_rc_buffer", video.vaapi.strict_rc_buffer);
-
-    string_f(vars, "capture", video.capture);
-    
-#ifdef _WIN32
-    // Check if WGC is selected and we're running in service mode
-    // If so, automatically switch to DDX since WGC doesn't work in system mode
-    if (!video.capture.empty() && video.capture == "wgc") {
-      if (is_running_as_system_user) {
-        BOOST_LOG(warning) << "WGC capture requires user session mode. Automatically switching to DDX capture."sv;
-        video.capture = "ddx";
-      }
-    }
-#endif
-    
     string_f(vars, "encoder", video.encoder);
+#else
+    video.encoder = "pyrowave";  // Fixed internal telemetry identity, not a configurable codec.
+#endif
+    string_f(vars, "capture", video.capture);
     string_f(vars, "adapter_name", video.adapter_name);
     {
       auto first = video.adapter_name.find_first_not_of(" \t\r\n");
@@ -1340,24 +1334,9 @@ namespace config {
     string_f(vars, "output_name", video.output_name);
     
 #ifdef _WIN32
-    // Capture target: "display" (default) or "window"
     string_f(vars, "capture_target", video.capture_target);
-    if (video.capture_target.empty()) {
-      video.capture_target = "display";  // Default to display capture
-    }
-    
-    // Window title for window capture
-    string_f(vars, "window_title", video.window_title);
-    
-    // Validate capture_target
-    if (video.capture_target != "display" && video.capture_target != "window") {
-      BOOST_LOG(warning) << "Invalid capture_target: ["sv << video.capture_target << "], defaulting to 'display'"sv;
-      video.capture_target = "display";
-    }
-    
-    // If window capture is selected, ensure window_title is provided
-    if (video.capture_target == "window" && video.window_title.empty()) {
-      BOOST_LOG(warning) << "capture_target=window but window_title is empty. Window capture may fail."sv;
+    if (const auto reason = pyrowave::validate_capture_target(video.capture_target)) {
+      BOOST_LOG(error) << reason;
     }
 #endif
     int_f(vars, "display_device_prep", video.display_device_prep, display_device::parsed_config_t::device_prep_from_view);
