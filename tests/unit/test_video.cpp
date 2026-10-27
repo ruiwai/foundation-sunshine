@@ -243,7 +243,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(EncoderTest, ValidateEncoder) {
   auto &encoder = *GetParam();
   const auto probe_display_name = display_device::get_display_name(config::video.output_name);
-  const bool available = video::validate_encoder(encoder, false, std::nullopt, probe_display_name);
+  const bool available = video::validate_encoder(encoder, false, probe_display_name);
   if (!available && encoder.name != "software") {
     GTEST_SKIP() << "Encoder not available";
   }

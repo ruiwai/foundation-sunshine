@@ -182,3 +182,7 @@ Windows tests for this change have not yet executed; portable checks exclude the
 
 Private-VDD-cursor-shrink/v1: superseded unreachable VDD cursor work removed after pure policy tests.
 Shared cursor/input elsewhere unchanged; Windows validation of this revision remains pending.
+
+Probe-override-removal/v1: obsolete DDX probe override plumbing removed; private Windows gate and non-Windows probe behavior preserved.
+Static caller/symbol review and portable build/CTest 2/2 passed; portable excludes changed video.cpp, video.h and test_video.cpp.
+Windows fullhostlink/runtime validation of this revision remains pending; prior a125c5e fullhostlink success is not removed-path execution coverage.

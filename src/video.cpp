@@ -67,22 +67,6 @@ namespace video {
     std::map<std::uint64_t, hdr_pipeline_status_t> hdr_pipeline_statuses;
     std::atomic<std::uint64_t> next_hdr_pipeline_status_id { 1 };
 
-    std::optional<std::string>
-    capture_override_for_encoder_probe() {
-#ifdef _WIN32
-      // VDD shared-texture producer may not be ready (metadata mapping / KeyedMutex
-      // not yet published) at encoder-probe time. Probing the real VDD backend
-      // therefore tends to fail on cold start, even though runtime capture works
-      // fine once the producer comes up. Fall back to ddx for the probe only;
-      // this override is injected per-display via config_t::capture_backend_override
-      // so it does not mutate the global config::video.capture used at runtime.
-      if (config::video.capture == "vdd") {
-        return std::string { "ddx" };
-      }
-#endif
-      return std::nullopt;
-    }
-
     /**
      * @brief Check if we can allow probing for the encoders.
      * @return True if there should be no issues with the probing, false if we should prevent it.
@@ -4712,21 +4696,13 @@ namespace video {
   validate_encoder(
     encoder_t &encoder,
     bool expect_failure,
-    const std::optional<std::string> &probe_capture_override,
     const std::string &probe_display_name) {
     std::shared_ptr<platf::display_t> disp;
-    const auto configured_capture_backend = config::video.capture;
 
     BOOST_LOG(info) << "Trying encoder ["sv << encoder.name << ']';
     auto fg = util::fail_guard([&]() {
       BOOST_LOG(info) << "Encoder ["sv << encoder.name << "] failed"sv;
     });
-
-    if (probe_capture_override) {
-      BOOST_LOG(info) << "Temporarily using capture backend ["sv << *probe_capture_override
-                      << "] for encoder probe while configured capture backend is ["sv
-                      << configured_capture_backend << "]"sv;
-    }
 
     // Quick GPU compatibility check: skip encoders that definitely won't work on this GPU
     // This optimization prevents testing encoders on incompatible hardware (e.g., NVIDIA NVENC on AMD GPU)
@@ -4751,10 +4727,6 @@ namespace video {
     // Note: videoFormat starts at 0 (H.264), will be changed to 1 (HEVC) or 2 (AV1) later if needed
     config_t config_max_ref_frames { 1920, 1080, 60, 1000, 1, 1, 1, 0, 0, 0, 0 };
     config_t config_autoselect { 1920, 1080, 60, 1000, 1, 1, 0, 0, 0, 0, 0 };
-    if (probe_capture_override) {
-      config_max_ref_frames.capture_backend_override = *probe_capture_override;
-      config_autoselect.capture_backend_override = *probe_capture_override;
-    }
 
     // If the encoder isn't supported at all (not even H.264), bail early
     reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, config_autoselect);
@@ -4879,9 +4851,6 @@ namespace video {
       }
       else {
         config_t generic_hdr_config = { 1920, 1080, 60, 1000, 1, 1, 0, 3, 1, 1, 0 };
-        if (probe_capture_override) {
-          generic_hdr_config.capture_backend_override = *probe_capture_override;
-        }
 
         // Reset the display since we're switching from SDR to HDR
         reset_display(disp, encoder.platform_formats->dev_type, probe_display_name, generic_hdr_config);
@@ -4999,8 +4968,6 @@ namespace video {
       return 0;
     }
 
-    const auto probe_capture_override = capture_override_for_encoder_probe();
-
 #ifdef _WIN32
     // Reuse CUDA interop across this probe's short-lived 10-bit 4:4:4
     // candidates, but release it on every exit when no real encoder needs it.
@@ -5023,42 +4990,7 @@ namespace video {
       return -1;
     }
     auto probe_display_name = configured_display_name;
-    if (probe_capture_override) {
-      // The Windows implementation enumerates all DXGI capture-ready outputs
-      // regardless of memory type, so one pass serves every encoder candidate.
-      const auto capture_ready_displays = encoder_list.empty() ?
-                                            std::vector<std::string> {} :
-                                            platf::display_names(encoder_list.front()->platform_formats->dev_type);
-      const bool exact_target_unavailable = target_requires_exact_resolution &&
-                                            std::ranges::find(capture_ready_displays, configured_display_name) == capture_ready_displays.end();
-      if (exact_target_unavailable) {
-        last_encoder_probe_result = {
-          probe_error_e::no_active_display,
-          "The requested display is not available to the encoder probe capture backend.",
-          "Connect or enable the selected display, then try again."
-        };
-        BOOST_LOG(error) << "Requested output ["sv << configured_output_name
-                         << "] is unavailable to temporary capture backend ["sv
-                         << *probe_capture_override << "]"sv;
-        return -1;
-      }
-      probe_display_name = select_encoder_probe_display(configured_display_name, capture_ready_displays);
-      if (target && target->policy != probe_target_policy_e::backend_autoselect &&
-          !configured_output_name.empty() && configured_display_name.empty()) {
-        BOOST_LOG(warning) << "Configured output ["sv << configured_output_name
-                           << "] could not be resolved for temporary capture backend ["sv
-                           << *probe_capture_override
-                           << "]; encoder probing will use backend display auto-selection"sv;
-      }
-      else if (target && target->policy != probe_target_policy_e::backend_autoselect &&
-               !configured_display_name.empty() && probe_display_name.empty()) {
-        BOOST_LOG(warning) << "Configured output ["sv << configured_display_name
-                           << "] is unavailable to temporary capture backend ["sv
-                           << *probe_capture_override
-                           << "]; encoder probing will use backend display auto-selection"sv;
-      }
-    }
-    else if (target && target->policy == probe_target_policy_e::vdd_compatible && configured_display_name.empty()) {
+    if (target && target->policy == probe_target_policy_e::vdd_compatible && configured_display_name.empty()) {
       last_encoder_probe_result = {
         probe_error_e::no_active_display,
         "The requested display is not connected or active for encoder probing.",
@@ -5108,7 +5040,6 @@ namespace video {
           if (!validate_encoder(
                 *encoder,
                 previous_encoder && previous_encoder != encoder,
-                probe_capture_override,
                 probe_display_name)) {
             pos = encoder_list.erase(pos);
             break;
@@ -5140,7 +5071,6 @@ namespace video {
         if (!validate_encoder(
               *encoder,
               previous_encoder && previous_encoder != encoder,
-              probe_capture_override,
               probe_display_name)) {
           pos = encoder_list.erase(pos);
           continue;
@@ -5181,7 +5111,6 @@ namespace video {
         if (!validate_encoder(
               *encoder,
               previous_encoder && previous_encoder != encoder,
-              probe_capture_override,
               probe_display_name)) {
           pos = encoder_list.erase(pos);
           continue;

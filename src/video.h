@@ -655,7 +655,6 @@ namespace video {
   validate_encoder(
     encoder_t &encoder,
     bool expect_failure,
-    const std::optional<std::string> &probe_capture_override,
     const std::string &probe_display_name);
 
   /**
