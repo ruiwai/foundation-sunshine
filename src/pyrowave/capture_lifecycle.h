@@ -1,22 +1,26 @@
 #pragma once
 
 #include <chrono>
+#include <exception>
+#include <functional>
 #include <thread>
 #include <utility>
 
 namespace pyrowave {
   enum class capture_wait_result { ready, stopped, timed_out };
 
-  // Callbacks must be nonthrowing; referenced context must outlive this owner.
-  // Stop is idempotent. Driver calls may block indefinitely: cleanup is always
-  // synchronous, never detached or abandoned at a polling deadline.
+  // Stop must be nonthrowing and idempotent; referenced context must outlive this owner.
+  // Running/work failures are contained. Driver calls may block indefinitely:
+  // cleanup is synchronous, never detached or abandoned at a polling deadline.
   template<class Stop>
   class capture_worker {
   public:
     template<class Running, class Work>
-    capture_worker(Stop stop, Running running, Work work):
+    capture_worker(Stop stop, Running running, Work work,
+                   std::function<void(std::exception_ptr)> on_error = {}):
         stop_(std::move(stop)),
-        worker_([this, running = std::move(running), work = std::move(work)]() mutable {
+        worker_([this, running = std::move(running), work = std::move(work),
+                 on_error = std::move(on_error)]() mutable {
           try {
             struct exit_guard {
               Stop &stop;
@@ -24,8 +28,11 @@ namespace pyrowave {
             } guard { stop_ };
             if (running()) work();
           } catch (...) {
-            // Unwind the exit guard even if a callback violates its contract.
-            throw;
+            try {
+              if (on_error) on_error(std::current_exception());
+            } catch (...) {
+              // Reporting must not let a worker failure escape the thread.
+            }
           }
         }) {}
 

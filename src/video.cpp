@@ -4166,6 +4166,15 @@ namespace video {
       [&, config]() {
         captureThread(capture_ctx_t { images, config }, capture_ctx.display_wp,
                       capture_ctx.reinit_event, capture_ctx.encoder_p);
+      },
+      [](std::exception_ptr failure) {
+        try {
+          std::rethrow_exception(failure);
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Capture worker failed: " << e.what();
+        } catch (...) {
+          BOOST_LOG(error) << "Capture worker failed: unknown exception";
+        }
       }
     };
 

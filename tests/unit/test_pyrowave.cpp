@@ -42,6 +42,7 @@ extern "C" {
 #include <memory>
 #include <mutex>
 #include <new>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -112,6 +113,100 @@ namespace {
     EXPECT_EQ(state.work, 1);
     EXPECT_EQ(state.exits, 1);
     EXPECT_EQ(state.stops, 2);
+  }
+
+  TEST(PyrowaveCaptureLifecycleTest, ThrowingWorkStopsOutputReportsAndJoins) {
+    capture_state state;
+    std::atomic<int> destroyed { 0 };
+    std::exception_ptr reported;
+    bool stopped_at_report = false;
+    {
+      pyrowave::capture_worker owner {
+        [&]() { state.stop(); }, []() { return true; },
+        [&, resource = std::make_shared<capture_resource>(destroyed)]() {
+          ++state.work;
+          throw std::runtime_error("work failed");
+        },
+        [&](std::exception_ptr failure) {
+          stopped_at_report = !state.running && state.stops >= 1;
+          reported = failure;
+        }
+      };
+      EXPECT_TRUE(state.wait_stopped());
+    }
+    EXPECT_EQ(state.work, 1);
+    EXPECT_EQ(state.stops, 2);
+    EXPECT_FALSE(state.running);
+    EXPECT_TRUE(stopped_at_report);
+    EXPECT_EQ(destroyed, 1);
+    ASSERT_TRUE(reported);
+    try {
+      std::rethrow_exception(reported);
+    } catch (const std::runtime_error &e) {
+      EXPECT_STREQ(e.what(), "work failed");
+    }
+  }
+
+  TEST(PyrowaveCaptureLifecycleTest, ThrowingRunningSkipsWorkStopsOutputReportsAndJoins) {
+    capture_state state;
+    std::atomic<int> destroyed { 0 };
+    std::exception_ptr reported;
+    bool stopped_at_report = false;
+    {
+      pyrowave::capture_worker owner {
+        [&]() { state.stop(); },
+        [resource = std::make_shared<capture_resource>(destroyed)]() -> bool {
+          throw std::logic_error("running failed");
+        },
+        [&]() { ++state.work; },
+        [&](std::exception_ptr failure) {
+          stopped_at_report = !state.running && state.stops >= 1;
+          reported = failure;
+        }
+      };
+      EXPECT_TRUE(state.wait_stopped());
+    }
+    EXPECT_EQ(state.work, 0);
+    EXPECT_EQ(state.stops, 2);
+    EXPECT_FALSE(state.running);
+    EXPECT_TRUE(stopped_at_report);
+    EXPECT_EQ(destroyed, 1);
+    ASSERT_TRUE(reported);
+    try {
+      std::rethrow_exception(reported);
+    } catch (const std::logic_error &e) {
+      EXPECT_STREQ(e.what(), "running failed");
+    }
+  }
+
+  TEST(PyrowaveCaptureLifecycleTest, ThrowingReporterIsContainedAndWorkerJoins) {
+    capture_state state;
+    std::atomic<int> destroyed { 0 };
+    std::exception_ptr reported;
+    bool stopped_at_report = false;
+    {
+      pyrowave::capture_worker owner {
+        [&]() { state.stop(); }, []() { return true; },
+        [&]() { ++state.work; throw 42; },
+        [&, resource = std::make_shared<capture_resource>(destroyed)](std::exception_ptr failure) {
+          stopped_at_report = !state.running && state.stops >= 1;
+          reported = failure;
+          throw std::runtime_error("reporter failed");
+        }
+      };
+      EXPECT_TRUE(state.wait_stopped());
+    }
+    EXPECT_EQ(state.work, 1);
+    EXPECT_EQ(state.stops, 2);
+    EXPECT_FALSE(state.running);
+    EXPECT_TRUE(stopped_at_report);
+    EXPECT_EQ(destroyed, 1);
+    ASSERT_TRUE(reported);
+    try {
+      std::rethrow_exception(reported);
+    } catch (int failure) {
+      EXPECT_EQ(failure, 42);
+    }
   }
 
   TEST(PyrowaveCaptureLifecycleTest, DestructionStopsAndJoinsBeforeDependentStateDies) {
