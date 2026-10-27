@@ -39,6 +39,7 @@ extern "C" {
 #include "nvenc/nvenc_encoder.h"
 #include "amf/amf_encoder.h"
 #include "platform/common.h"
+#include "pyrowave/capture_lifecycle.h"
 #include "pyrowave/runtime.h"
 #include "pyrowave/signal_contract.h"
 #include "sync.h"
@@ -1153,8 +1154,6 @@ namespace video {
   };
 
   struct capture_thread_async_ctx_t {
-    std::thread capture_thread;
-
     safe::signal_t reinit_event;
     const encoder_t *encoder_p;
     sync_util::sync_t<std::weak_ptr<platf::display_t>> display_wp;
@@ -1813,13 +1812,6 @@ namespace video {
     auto &images = capture_ctx.images;
     auto &config = capture_ctx.config;
 
-    auto fg = util::fail_guard([&]() {
-      images->stop();
-    });
-    if (!images->running()) {
-      return;
-    }
-
     auto switch_display_event = mail::man->event<int>(mail::switch_display);
     auto active_display_event = mail::man->event<std::string>(mail::active_display);
 
@@ -2022,26 +2014,21 @@ namespace video {
           // display_wp is modified in this thread only
           // Wait for the other shared_ptr's of display to be destroyed.
           // New displays will only be created in this thread.
-          const auto reference_deadline = std::chrono::steady_clock::now() + private_host_wait_timeout;
-          while (display_wp->use_count() != 1) {
-            if (!images->running()) {
-              return;
-            }
-            if (is_pyrowave && std::chrono::steady_clock::now() >= reference_deadline) {
-              BOOST_LOG(error) << "PyroWave display reference wait timed out";
-              return;
-            }
-            // Free images that weren't consumed by the encoders. These can reference the display and prevent
-            // the ref count from reaching 1. We do this here rather than on the encoder thread to avoid race
-            // conditions where the encoding loop might free a good frame after reinitializing if we capture
-            // a new frame here before the encoder has finished reinitializing.
-            // The encoder may consume the peeked frame; don't block waiting for a new one.
-            while (images->running() && images->peek()) {
-              images->pop(0ms);
-            }
-
-            std::this_thread::sleep_for(20ms);
+          const auto reference_wait = pyrowave::wait_capture_references(
+            [&]() { return display_wp->use_count() == 1; },
+            [&]() { return images->running(); },
+            [&]() {
+              // Drain unconsumed images here, not on the encoder thread where
+              // reinit could race a new good frame. A peek can lose its payload.
+              while (images->running() && images->peek()) images->pop(0ms);
+            },
+            []() { return std::chrono::steady_clock::now(); },
+            []() { std::this_thread::sleep_for(20ms); },
+            private_host_wait_timeout, is_pyrowave);
+          if (reference_wait == pyrowave::capture_wait_result::timed_out) {
+            BOOST_LOG(error) << "PyroWave display reference wait timed out";
           }
+          if (reference_wait != pyrowave::capture_wait_result::ready) return;
 
           if (!images->running()) {
             return;
@@ -4173,19 +4160,13 @@ namespace video {
     }
 
     // Stop and join the worker before its stack-owned state is destroyed.
-    auto worker_guard = util::fail_guard([&]() {
-      images->stop();
-      if (capture_ctx.capture_thread.joinable()) {
-        capture_ctx.capture_thread.join();
+    pyrowave::capture_worker worker {
+      [images]() { images->stop(); },
+      [images]() { return images->running(); },
+      [&, config]() {
+        captureThread(capture_ctx_t { images, config }, capture_ctx.display_wp,
+                      capture_ctx.reinit_event, capture_ctx.encoder_p);
       }
-    });
-
-    capture_ctx.capture_thread = std::thread {
-      captureThread,
-      capture_ctx_t { images, config },
-      std::ref(capture_ctx.display_wp),
-      std::ref(capture_ctx.reinit_event),
-      capture_ctx.encoder_p
     };
 
     int frame_nr = 1;

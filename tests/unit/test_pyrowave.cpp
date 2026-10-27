@@ -4,6 +4,7 @@
  */
 #include "src/pyrowave/bounded_wait.h"
 #include "src/pyrowave/capabilities.h"
+#include "src/pyrowave/capture_lifecycle.h"
 #include "src/pyrowave/config.h"
 #include "src/pyrowave/encode_guard.h"
 #include "src/pyrowave/plane_ring.h"
@@ -34,14 +35,238 @@ extern "C" {
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <thread>
 #include <vector>
 
 namespace {
+
+  using capture_clock = std::chrono::steady_clock;
+  using capture_result = pyrowave::capture_wait_result;
+  using namespace std::chrono_literals;
+
+  struct capture_signal {
+    std::promise<void> promise;
+    std::future<void> future = promise.get_future();
+    std::once_flag notified;
+    void notify() { std::call_once(notified, [&]() { promise.set_value(); }); }
+    bool wait() { return future.wait_for(2s) == std::future_status::ready; }
+  };
+
+  struct capture_state {
+    std::atomic<bool> running { true };
+    std::atomic<int> stops { 0 }, work { 0 }, exits { 0 };
+    std::mutex mutex;
+    std::condition_variable cv;
+    void stop() {
+      {
+        std::lock_guard lock(mutex);
+        running = false;
+        ++stops;
+      }
+      cv.notify_all();
+    }
+    bool wait_stopped() {
+      std::unique_lock lock(mutex);
+      return cv.wait_for(lock, 2s, [&]() { return stops.load() != 0; });
+    }
+  };
+
+  struct capture_resource {
+    std::atomic<int> &destroyed;
+    explicit capture_resource(std::atomic<int> &count): destroyed(count) {}
+    ~capture_resource() { ++destroyed; }
+  };
+
+  TEST(PyrowaveCaptureLifecycleTest, PreCancelledStartSkipsWorkAndStopsOutput) {
+    capture_state state;
+    state.running = false;
+    {
+      pyrowave::capture_worker owner {
+        [&]() { state.stop(); }, [&]() { return state.running.load(); },
+        [&]() { ++state.work; }
+      };
+      EXPECT_TRUE(state.wait_stopped());
+    }
+    EXPECT_EQ(state.work, 0);
+    EXPECT_EQ(state.stops, 2);
+    EXPECT_FALSE(state.running);
+  }
+
+  TEST(PyrowaveCaptureLifecycleTest, NormalCompletionStopsOutputAndJoins) {
+    capture_state state;
+    {
+      pyrowave::capture_worker owner {
+        [&]() { state.stop(); }, [&]() { return state.running.load(); },
+        [&]() { ++state.work; ++state.exits; }
+      };
+      EXPECT_TRUE(state.wait_stopped());
+      EXPECT_EQ(state.stops, 1);
+    }
+    EXPECT_EQ(state.work, 1);
+    EXPECT_EQ(state.exits, 1);
+    EXPECT_EQ(state.stops, 2);
+  }
+
+  TEST(PyrowaveCaptureLifecycleTest, DestructionStopsAndJoinsBeforeDependentStateDies) {
+    capture_state state;
+    capture_signal entered;
+    std::atomic<int> destroyed { 0 };
+    auto dependent = std::make_unique<capture_resource>(destroyed);
+    bool saw_stop = false;
+    {
+      pyrowave::capture_worker owner {
+        [&]() { state.stop(); }, [&]() { return state.running.load(); },
+        [&]() {
+          ++state.work;
+          entered.notify();
+          saw_stop = state.wait_stopped();
+          EXPECT_EQ(dependent->destroyed.load(), 0);
+          ++state.exits;
+        }
+      };
+      EXPECT_TRUE(entered.wait());
+      EXPECT_EQ(state.exits, 0);
+    }
+    EXPECT_TRUE(saw_stop);
+    EXPECT_EQ(state.exits, 1);
+    EXPECT_EQ(state.stops, 2);
+    EXPECT_EQ(destroyed, 0);
+    dependent.reset();
+    EXPECT_EQ(destroyed, 1);
+  }
+
+  TEST(PyrowaveCaptureLifecycleTest, DrainDropsQueuedReferenceButWaitsForExternalHolder) {
+    capture_state state;
+    capture_signal drained, release;
+    std::atomic<int> destroyed { 0 }, drains { 0 };
+    auto display = std::make_shared<capture_resource>(destroyed);
+    std::weak_ptr<capture_resource> weak = display;
+    auto external = display, queued = display;
+    capture_result result = capture_result::stopped;
+    auto now = capture_clock::time_point {};
+    {
+      pyrowave::capture_worker owner {
+        [&]() { state.stop(); }, [&]() { return state.running.load(); },
+        [&]() {
+          result = pyrowave::wait_capture_references(
+            [&]() { return weak.use_count() == 1; }, [&]() { return state.running.load(); },
+            [&]() { queued.reset(); ++drains; }, [&]() { return now; },
+            [&]() { drained.notify(); if (!release.wait()) state.stop(); now += 20ms; }, 5s, true);
+          ++state.exits;
+        }
+      };
+      EXPECT_TRUE(drained.wait());
+      EXPECT_EQ(drains, 1);
+      EXPECT_EQ(weak.use_count(), 2);
+      EXPECT_EQ(state.exits, 0);
+      EXPECT_EQ(destroyed, 0);
+      external.reset();
+      release.notify();
+      EXPECT_TRUE(state.wait_stopped());
+    }
+    EXPECT_EQ(result, capture_result::ready);
+    EXPECT_EQ(state.exits, 1);
+    EXPECT_EQ(state.stops, 2);
+    EXPECT_FALSE(queued);
+    EXPECT_EQ(destroyed, 0);
+    display.reset();
+    EXPECT_EQ(destroyed, 1);
+  }
+
+  TEST(PyrowaveCaptureLifecycleTest, HeldReferenceTimesOutWithoutConfiscationAndOwnerJoins) {
+    capture_state state;
+    std::atomic<int> destroyed { 0 };
+    auto display = std::make_shared<capture_resource>(destroyed);
+    std::weak_ptr<capture_resource> weak = display;
+    auto external = display;
+    auto now = capture_clock::time_point {};
+    int drains = 0, pauses = 0;
+    capture_result result = capture_result::ready;
+    {
+      pyrowave::capture_worker owner {
+        [&]() { state.stop(); }, [&]() { return state.running.load(); },
+        [&]() {
+          result = pyrowave::wait_capture_references(
+            [&]() { return weak.use_count() == 1; }, [&]() { return state.running.load(); },
+            [&]() { ++drains; }, [&]() { return now; },
+            [&]() { now += 20ms; if (++pauses > 250) state.stop(); }, 5s, true);
+          ++state.exits;
+        }
+      };
+      EXPECT_TRUE(state.wait_stopped());
+    }
+    EXPECT_EQ(result, capture_result::timed_out);
+    EXPECT_EQ(now.time_since_epoch(), 5s);
+    EXPECT_EQ(drains, 250);
+    EXPECT_EQ(pauses, 250);
+    EXPECT_EQ(state.exits, 1);
+    EXPECT_EQ(state.stops, 2);
+    EXPECT_EQ(destroyed, 0);
+    display.reset();
+    EXPECT_FALSE(weak.expired());
+    EXPECT_EQ(destroyed, 0);
+    external.reset();
+    EXPECT_EQ(destroyed, 1);
+  }
+
+  TEST(PyrowaveCaptureLifecycleTest, CancellationInterruptsPendingWaitAndPrecedesReady) {
+    capture_state state;
+    capture_signal pending, resume;
+    std::atomic<int> destroyed { 0 };
+    auto display = std::make_shared<capture_resource>(destroyed), external = display;
+    std::weak_ptr<capture_resource> weak = display;
+    capture_result result = capture_result::ready;
+    int drains = 0, ready_calls = 0;
+    {
+      pyrowave::capture_worker owner {
+        [&]() { state.stop(); }, [&]() { return state.running.load(); },
+        [&]() {
+          result = pyrowave::wait_capture_references(
+            [&]() { ++ready_calls; return weak.use_count() == 1; }, [&]() { return state.running.load(); },
+            [&]() { ++drains; }, []() { return capture_clock::now(); },
+            [&]() { pending.notify(); if (!resume.wait()) state.stop(); }, 5s, true);
+          ++state.exits;
+        }
+      };
+      EXPECT_TRUE(pending.wait());
+      state.stop();
+      external.reset(); // Ready and stopped together: cancellation must win.
+      resume.notify();
+    }
+    EXPECT_EQ(result, capture_result::stopped);
+    EXPECT_EQ(drains, 1);
+    EXPECT_EQ(ready_calls, 1);
+    EXPECT_EQ(state.exits, 1);
+    EXPECT_EQ(state.stops, 3);
+    EXPECT_EQ(destroyed, 0);
+    EXPECT_EQ(pyrowave::wait_capture_references(
+      [&]() { ++ready_calls; return true; }, []() { return false; },
+      [&]() { ++drains; }, []() { return capture_clock::now(); }, []() {}, 5s, true), capture_result::stopped);
+    EXPECT_EQ(ready_calls, 1);
+    EXPECT_EQ(drains, 1);
+  }
+
+  TEST(PyrowaveCaptureLifecycleTest, UnboundedLegacyWaitIgnoresDeadlineButHonorsStop) {
+    capture_state state;
+    auto now = capture_clock::time_point {};
+    int drains = 0, pauses = 0;
+    const auto result = pyrowave::wait_capture_references(
+      []() { return false; }, [&]() { return state.running.load(); },
+      [&]() { ++drains; }, [&]() { return now; },
+      [&]() { now += 1s; if (++pauses == 3) state.stop(); }, 20ms, false);
+    EXPECT_EQ(result, capture_result::stopped);
+    EXPECT_EQ(drains, 3);
+    EXPECT_EQ(pauses, 3);
+    EXPECT_EQ(now.time_since_epoch(), 3s);
+    EXPECT_EQ(state.stops, 1);
+  }
 
   TEST(PyrowaveIdlePolicyTest, RejectsUnverifiedSuppression) {
     static_assert(noexcept(pyrowave::validate_idle_policy(false)));
