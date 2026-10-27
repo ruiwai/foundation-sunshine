@@ -257,9 +257,9 @@ jobs:
           path: ${{ github.workspace }}\.ccache
           # The key is unique per run; the prefix restore-key is what actually
           # produces the hits: every run seeds itself from the most recent
-          # previous one. Saving is split out below so that only master
-          # writes: PR-branch entries are invisible to other branches yet
-          # still consume the shared cache quota, and when that quota fills
+          # previous one. Only master and explicit manual builds of
+          # pyrowave/uhd770-private save, with identical keys scoped by ref.
+          # PR runs only restore to limit shared cache quota use. When full
           # (10 GB, LRU), eviction wiped the whole lineage once and forced a
           # full 47-minute cold rebuild.
           key: ccache-windows-${{ github.run_id }}
@@ -374,11 +374,11 @@ jobs:
           fi
 
       - name: Save compiler cache
-        # Only master writes (always(): a failed or cancelled build still
-        # produced valid objects). PR runs restore master's entry, so they
-        # don't need to save, and skipping their saves keeps the shared
-        # cache quota flat.
-        if: always() && github.ref == 'refs/heads/master'
+        # Master and manual pyrowave/uhd770-private builds save even after
+        # failure or cancellation (always()): compiled objects remain valid.
+        # PR runs only restore; excluding their saves limits shared quota use.
+        # Each allowed ref retains its own warm lineage.
+        if: always() && (github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/pyrowave/uhd770-private'))
         id: ccache_save
         continue-on-error: true
         uses: actions/cache/save@v6
@@ -387,11 +387,11 @@ jobs:
           key: ccache-windows-${{ github.run_id }}
 
       - name: Prune stale compiler cache entries
-        # Collapse the cache to exactly one entry (the newest one saved).
-        # Entries pile up one-per-run otherwise; on a 10 GB repo quota that
-        # once got the entire lineage LRU-evicted. A single entry is also
-        # restored by every later run, which keeps resetting its 7-day
-        # inactivity clock, so neither eviction path can take it out.
+        # Keep one newest compiler cache per ref, for master and explicit
+        # private manual builds. Ref-scoped enumeration isolates their caches.
+        # Entries otherwise pile up one-per-run and can exhaust the repo quota;
+        # pruning reduces quota pressure without deleting another ref's cache.
+        # The newest entry remains available to later runs in the same scope.
         # Only entries from runs OLDER than this one are deleted (run ids
         # increase monotonically): a cancelled run still executes its
         # always() save and prune alongside the next run, and age-filtered
@@ -400,7 +400,7 @@ jobs:
         # Skipped unless the save step actually succeeded (outcome keeps the
         # real result under continue-on-error; the save subaction sets no
         # outputs, so conclusion can't tell success from failure).
-        if: always() && github.ref == 'refs/heads/master' && steps.ccache_save.outcome == 'success'
+        if: always() && (github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/pyrowave/uhd770-private')) && steps.ccache_save.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
@@ -410,7 +410,7 @@ jobs:
           # latter caps at --limit 100, and once this repo's other caches
           # (msys2, npm, ...) grow past that, stale ccache entries would
           # fall outside the window and never get pruned.
-          $stale = gh api --paginate "repos/$env:GITHUB_REPOSITORY/actions/caches?per_page=100" --jq '.actions_caches[] | select(.key | test("^ccache-windows-[0-9]+$")) | [(.key | sub("^ccache-windows-";"") | tonumber), .id, .key] | @tsv' |
+          $stale = gh api --method GET --paginate "repos/$env:GITHUB_REPOSITORY/actions/caches" -f per_page=100 -f "ref=$env:GITHUB_REF" --jq '.actions_caches[] | select(.key | test("^ccache-windows-[0-9]+$")) | [(.key | sub("^ccache-windows-";"") | tonumber), .id, .key] | @tsv' |
             Where-Object { $_ } |
             ForEach-Object {
               $parts = $_ -split "`t"
