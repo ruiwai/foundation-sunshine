@@ -192,6 +192,16 @@ namespace {
     }
   };
 
+  TEST_F(PyrowaveConversion, WarpCompletionQueryHonorsStop) {
+    ComPtr<ID3D11Query> query;
+    const D3D11_QUERY_DESC desc { D3D11_QUERY_EVENT, 0 };
+    ASSERT_EQ(device->CreateQuery(&desc, &query), S_OK);
+    int calls = 0;
+    EXPECT_FALSE(platf::dxgi::wait_for_gpu_completion(context.Get(), query.Get(), 1000, [&] { ++calls; return true; }));
+    EXPECT_EQ(calls, 1);
+    EXPECT_TRUE(platf::dxgi::wait_for_gpu_completion(context.Get(), query.Get(), 1000));
+  }
+
   TEST_F(PyrowaveConversion, WarpBorrowedSourceHandoffPreservesConvertedPlanes) {
     for (bool full : {false, true}) {
       SCOPED_TRACE(testing::Message() << "full=" << full);

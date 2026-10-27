@@ -8,11 +8,12 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <functional>
 
 #include "display.h"
 
 namespace platf::dxgi {
-  bool wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms);
+  bool wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms, const std::function<bool()> &stop_requested = {});
 
   struct shared_yuv_plane_t {
     HANDLE shared_handle = nullptr;
@@ -38,7 +39,7 @@ namespace platf::dxgi {
   };
 
   [[nodiscard]] std::unique_ptr<shared_yuv_encode_device_t>
-  make_shared_yuv_encode_device(std::shared_ptr<display_base_t> display, const ::video::config_t &config);
+  make_shared_yuv_encode_device(std::shared_ptr<display_base_t> display, const ::video::config_t &config, std::function<bool()> stop_requested);
 
   /**
    * D3D11-backed image shared by capture backends and hardware encoders.

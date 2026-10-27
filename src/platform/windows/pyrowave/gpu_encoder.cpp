@@ -141,7 +141,7 @@ namespace platf::pyrowave_windows {
           return;
         }
 
-        conversion_ = dxgi::make_shared_yuv_encode_device(display, config);
+        conversion_ = dxgi::make_shared_yuv_encode_device(display, config, stop_requested_);
         if (!conversion_) {
           init_failure("conversion device initialization");
           return;
@@ -529,26 +529,15 @@ namespace platf::pyrowave_windows {
       verify_fence_return(std::uint64_t value) {
         // Check every GPU release before releasing its ring slot or publishing a frame;
         // do not require an additional, unused host-signal path to work.
-        constexpr DWORD timeout_ms = 1000;
-        if (fence_->GetCompletedValue() < value) {
-          util::safe_ptr_v2<void, BOOL, CloseHandle> completion_event {
-            CreateEventW(nullptr, FALSE, FALSE, nullptr)
-          };
-          if (!completion_event) {
-            init_failure("Vulkan-to-D3D11 fence probe event", static_cast<int>(GetLastError()));
-            return false;
-          }
-          const auto event_result = fence_->SetEventOnCompletion(value, completion_event.get());
-          if (FAILED(event_result)) {
-            init_failure("Vulkan-to-D3D11 fence probe completion", static_cast<int>(event_result));
-            return false;
-          }
-          const auto completion_result = WaitForSingleObject(completion_event.get(), timeout_ms);
-          if (completion_result != WAIT_OBJECT_0) {
-            init_failure("Vulkan-to-D3D11 fence probe wait",
-              static_cast<int>(completion_result == WAIT_FAILED ? GetLastError() : completion_result));
-            return false;
-          }
+        if (pyrowave::bounded_wait([&] {
+          const auto completed = fence_->GetCompletedValue();
+          if (completed == UINT64_MAX) return pyrowave::wait_result::failed;
+          if (completed >= value) return pyrowave::wait_result::complete;
+          Sleep(1);
+          return pyrowave::wait_result::pending;
+        }, stop_requested_, std::chrono::steady_clock::now, std::chrono::seconds(1)) != pyrowave::wait_result::complete) {
+          init_failure("Vulkan-to-D3D11 fence return stopped-or-failed");
+          return false;
         }
         const auto completed_value = fence_->GetCompletedValue();
         if (!pyrowave::is_fence_completion_valid(completed_value, value)) {

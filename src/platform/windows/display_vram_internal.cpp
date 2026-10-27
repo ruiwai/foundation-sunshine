@@ -7,24 +7,27 @@
 #include <utility>
 
 #include "src/logging.h"
+#include "src/pyrowave/bounded_wait.h"
 
 namespace platf::dxgi {
   using namespace std::literals;
 
   bool
-  wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms) {
+  wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms, const std::function<bool()> &stop_requested) {
     if (!context || !query) return false;
+    if (stop_requested && stop_requested()) return false;
     context->End(query);
     context->Flush();
     // Bound pending polling only; driver calls themselves are not cancellable.
-    const auto start = GetTickCount64();
-    for (;;) {
+    return pyrowave::bounded_wait([&] {
       BOOL complete = FALSE;
       const auto status = context->GetData(query, &complete, sizeof(complete), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-      if (status == S_OK) return complete == TRUE;
-      if (status != S_FALSE || GetTickCount64() - start >= timeout_ms) return false;
+      if (status == S_OK) return complete == TRUE ? pyrowave::wait_result::complete : pyrowave::wait_result::failed;
+      if (status != S_FALSE) return pyrowave::wait_result::failed;
       Sleep(1);
-    }
+      return pyrowave::wait_result::pending;
+    }, [&] { return stop_requested && stop_requested(); }, std::chrono::steady_clock::now,
+      std::chrono::milliseconds(timeout_ms)) == pyrowave::wait_result::complete;
   }
 
   bool

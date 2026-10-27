@@ -393,7 +393,8 @@ namespace platf::dxgi {
 
     int
     convert_direct(img_d3d_t &img, ID3D11ComputeShader *shader, ID3D11Buffer *range,
-      std::array<ID3D11UnorderedAccessView *, 3> outputs, UINT width, UINT height) {
+      std::array<ID3D11UnorderedAccessView *, 3> outputs, UINT width, UINT height, const std::function<bool()> &stop_requested) {
+      if (stop_requested && stop_requested()) return -1;
       for (auto it = img_ctx_map.begin(); it != img_ctx_map.end();) {
         if (it->second.img_weak.expired()) it = img_ctx_map.erase(it);
         else ++it;
@@ -427,7 +428,7 @@ namespace platf::dxgi {
       device_ctx->CSSetConstantBuffers(0, 1, &range);
       device_ctx->Dispatch((width / 2 + 7) / 8, (height / 2 + 7) / 8, 1);
       cleanup();
-      if (!wait_for_gpu_completion(device_ctx.get(), direct_completion.get(), 1000)) return -1;
+      if (!wait_for_gpu_completion(device_ctx.get(), direct_completion.get(), 1000, stop_requested)) return -1;
       guard.disable();
       // Completion proves source reads finished; return the source exactly once.
       return img.release_borrowed_vdd_after_convert(ctx.encoder_mutex.get()) ? 0 : -1;
@@ -3069,6 +3070,8 @@ namespace platf::dxgi {
 
   class d3d_shared_yuv_encode_device_t final: public shared_yuv_encode_device_t {
   public:
+    explicit d3d_shared_yuv_encode_device_t(std::function<bool()> stop_requested):
+        stop_requested_(std::move(stop_requested)) {}
     ~d3d_shared_yuv_encode_device_t() override {
       for (auto &slot : planes_) {
       for (auto &plane : slot) {
@@ -3166,7 +3169,7 @@ namespace platf::dxgi {
       }
       return base_.convert_direct(img, fused_shader_.get(), range_cb_.get(),
         { plane_uavs_[selected_slot_][0].get(), plane_uavs_[selected_slot_][1].get(), plane_uavs_[selected_slot_][2].get() },
-        plane.width, plane.height);
+        plane.width, plane.height, stop_requested_);
     }
 
     ID3D11Device *d3d_device() noexcept override { return base_.device.get(); }
@@ -3184,6 +3187,7 @@ namespace platf::dxgi {
     }
 
   private:
+    std::function<bool()> stop_requested_;
     d3d_base_encode_device base_;
     cs_t fused_shader_;
     buf_t range_cb_;
@@ -3197,8 +3201,8 @@ namespace platf::dxgi {
   std::unique_ptr<shared_yuv_encode_device_t>
   make_shared_yuv_encode_device(
     std::shared_ptr<display_base_t> display,
-    const ::video::config_t &config) {
-    auto device = std::make_unique<d3d_shared_yuv_encode_device_t>();
+    const ::video::config_t &config, std::function<bool()> stop_requested) {
+    auto device = std::make_unique<d3d_shared_yuv_encode_device_t>(std::move(stop_requested));
     if (!device->init(std::move(display), config)) {
       return {};
     }

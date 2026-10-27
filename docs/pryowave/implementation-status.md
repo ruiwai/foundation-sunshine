@@ -175,3 +175,7 @@ Windows compilation and execution of the new test remain pending; portable check
 Stop-aware-native-wait/v1: host pending native waits check stop in 1 ms slices with a 1 s total pending deadline, using the existing shutdown event peek.
 Source D3D query/event waits, native encode/readback, driver calls and destruction remain non-cancellable.
 This is not complete bounded stop/teardown or hardware proof; Windows compilation/runtime validation remains pending.
+
+Stop-aware-D3D/v1: source-query and return-fence waits check stop; non-completion/cancellation retains the lease.
+Native encode/readback and driver destruction remain noncancellable by this host policy.
+Windows tests for this change have not yet executed; portable checks exclude these paths.
