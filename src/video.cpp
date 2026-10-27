@@ -4494,7 +4494,7 @@ namespace video {
         }
         // These callbacks run after this branch ends. Copy branch-local
         // invariants; only the enclosing capture state may be referenced.
-        session_factory = [&config, &display, pyrowave_packet_boundary,
+        session_factory = [&config, &display, shutdown_event, pyrowave_packet_boundary,
                            pyrowave_frame_rate_num, pyrowave_frame_rate_den]() -> std::unique_ptr<encode_session_t> {
           auto base_display = std::dynamic_pointer_cast<platf::dxgi::display_vram_t>(display);
           if (!base_display) {
@@ -4503,7 +4503,7 @@ namespace video {
           }
           return platf::pyrowave_windows::make_gpu_encoder(
             base_display, config, pyrowave_packet_boundary,
-            pyrowave_frame_rate_num, pyrowave_frame_rate_den);
+            pyrowave_frame_rate_num, pyrowave_frame_rate_den, [shutdown_event] { return shutdown_event->peek(); });
         };
         backend_failure_handler = [&shutdown_event]() {
           BOOST_LOG(error) << "PyroWave GPU backend initialization or encoding failed; no CPU fallback is available. "

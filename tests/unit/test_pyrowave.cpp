@@ -2,6 +2,7 @@
  * @file tests/unit/test_pyrowave.cpp
  * @brief Pure-data and state-transition tests for the PyroWave foundation.
  */
+#include "src/pyrowave/bounded_wait.h"
 #include "src/pyrowave/capabilities.h"
 #include "src/pyrowave/capture_policy.h"
 #include "src/pyrowave/config.h"
@@ -1750,3 +1751,52 @@ TEST(PyrowaveEncodeGuardTest, SwallowsThrowingDiagnostics) {
   }), -1);
   EXPECT_EQ(failures, 1);
 }
+
+namespace {
+  class PyrowaveBoundedWaitTest: public ::testing::Test {
+  protected:
+    using result = pyrowave::wait_result;
+    std::chrono::steady_clock::time_point time {};
+    int calls = 0;
+    bool stopped = false;
+    template<class Poll>
+    result run(Poll poll) {
+      return pyrowave::bounded_wait([&] {
+        ++calls;
+        time += std::chrono::milliseconds(1);
+        return poll();
+      }, [&] { return stopped; }, [&] { return time; }, std::chrono::seconds(1));
+    }
+  };
+
+  TEST_F(PyrowaveBoundedWaitTest, ImmediateComplete) {
+    EXPECT_EQ(run([] { return result::complete; }), result::complete);
+    EXPECT_EQ(calls, 1);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, PendingThenComplete) {
+    EXPECT_EQ(run([&] { return calls == 3 ? result::complete : result::pending; }), result::complete);
+    EXPECT_EQ(calls, 3);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, PermanentPendingDeadline) {
+    EXPECT_EQ(run([] { return result::pending; }), result::failed);
+    EXPECT_EQ(time.time_since_epoch(), std::chrono::seconds(1));
+    EXPECT_EQ(calls, 1000);  // No poll after the total pending deadline.
+  }
+  TEST_F(PyrowaveBoundedWaitTest, ImmediateFailure) {
+    EXPECT_EQ(run([] { return result::failed; }), result::failed);
+    EXPECT_EQ(calls, 1);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, StopBeforePoll) {
+    stopped = true;
+    EXPECT_EQ(run([] { return result::complete; }), result::failed);
+    EXPECT_EQ(calls, 0);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, StopAfterPending) {
+    EXPECT_EQ(run([&] { stopped = true; return result::pending; }), result::failed);
+    EXPECT_EQ(calls, 1);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, StopRacesCompletion) {
+    EXPECT_EQ(run([&] { stopped = true; return result::complete; }), result::failed);
+    EXPECT_EQ(calls, 1);
+  }
+}  // namespace

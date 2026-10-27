@@ -9,6 +9,7 @@
 
 #include "src/video.h"
 
+#include <functional>
 #include <memory>
 #include <optional>
 
@@ -28,7 +29,8 @@ namespace platf::pyrowave_windows {
     const video::config_t &config,
     std::size_t packet_boundary,
     int frame_rate_num,
-    int frame_rate_den);
+    int frame_rate_den,
+    std::function<bool()> stop_requested);
 
   [[nodiscard]] bool
   is_gpu_encoder_session(const video::encode_session_t &session) noexcept;

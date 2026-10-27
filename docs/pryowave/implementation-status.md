@@ -171,3 +171,7 @@ Portable policy coverage only; Windows compilation/runtime validation remains pe
 Source-admission/v1: shared Windows helper preserves the existing per-frame predicate before direct conversion, without GPU calls or lease mutation.
 SourceLease regression covers admission fields/formats and real lease consumption with a scripted mutex, not GPU ordering/device loss.
 Windows compilation and execution of the new test remain pending; portable checks exclude it.
+
+Stop-aware-native-wait/v1: host pending native waits check stop in 1 ms slices with a 1 s total pending deadline, using the existing shutdown event peek.
+Source D3D query/event waits, native encode/readback, driver calls and destruction remain non-cancellable.
+This is not complete bounded stop/teardown or hardware proof; Windows compilation/runtime validation remains pending.

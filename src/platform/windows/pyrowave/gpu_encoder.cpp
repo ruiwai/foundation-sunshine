@@ -10,6 +10,7 @@
 #include "../display.h"
 #include "../display_vram_internal.h"
 #include "src/config.h"
+#include "src/pyrowave/bounded_wait.h"
 #include "src/pyrowave/encode_guard.h"
 #include "src/pyrowave/gpu_interop.h"
 #include "src/pyrowave/plane_ring.h"
@@ -97,7 +98,8 @@ namespace platf::pyrowave_windows {
         const video::config_t &config,
         std::size_t packet_boundary,
         int frame_rate_num,
-        int frame_rate_den):
+        int frame_rate_den,
+        std::function<bool()> stop_requested):
           packet_boundary_ { packet_boundary },
           width_ { config.width },
           height_ { config.height },
@@ -106,7 +108,12 @@ namespace platf::pyrowave_windows {
           frame_rate_den_ { frame_rate_den },
           bitrate_kbps_ {
             video::cap_initial_encoder_bitrate(config.bitrate, ::config::video.max_bitrate, 0)
-          } {
+          },
+          stop_requested_ { std::move(stop_requested) } {
+        if (!stop_requested_ || stop_requested_()) {
+          init_failure("stop callback missing-or-stopped");
+          return;
+        }
         if (packet_boundary == 0 || packet_boundary > LI_PYROWAVE_MAX_PACKET_SIZE ||
             packet_boundary <= LI_PYROWAVE_WIRE_FEC_HEADER_SIZE) {
           init_failure(
@@ -299,8 +306,8 @@ namespace platf::pyrowave_windows {
       ~gpu_encoder_session_t() override = default;
 
       [[nodiscard]] bool
-      ready() const noexcept {
-        return initialized_ && ring_.valid();
+      ready() const {
+        return initialized_ && ring_.valid() && !stop_requested_();
       }
 
       int
@@ -417,13 +424,13 @@ namespace platf::pyrowave_windows {
           return encode_failure(frame_number, "pyrowave-gpu-encode", static_cast<int>(encode_result));
         }
         const auto host_encode_return = std::chrono::steady_clock::now();
-        const auto wait_result = pyrowave_sync_object_cpu_wait(sync_.get(), release_value, 1000000000ull);
-        if (wait_result != PYROWAVE_SUCCESS) {
-          return encode_failure(frame_number, "pyrowave-fence-wait", static_cast<int>(wait_result));
+        if (!wait_for_release(release_value)) {
+          return encode_failure(frame_number, "pyrowave-fence-wait-stopped-or-failed");
         }
         if (!verify_fence_return(release_value)) {
           return encode_failure(frame_number, "vulkan-to-d3d11-fence-probe");
         }
+        if (stop_requested_()) return encode_failure(frame_number, "release-stopped-or-failed");
         sync_value_ = release_value;
         if (!ring_.finish_encode(*slot)) return encode_failure(frame_number, "plane-ring-release");
         const auto host_release_checked = std::chrono::steady_clock::now();
@@ -491,20 +498,27 @@ namespace platf::pyrowave_windows {
 
     private:
       bool
+      wait_for_release(std::uint64_t value) {
+        return pyrowave::bounded_wait([&] {
+          const auto result = pyrowave_sync_object_cpu_wait(sync_.get(), value, 1000000ull);
+          if (result == PYROWAVE_SUCCESS) return pyrowave::wait_result::complete;
+          return result == PYROWAVE_TIMEOUT ? pyrowave::wait_result::pending : pyrowave::wait_result::failed;
+        }, stop_requested_, std::chrono::steady_clock::now, std::chrono::seconds(1)) == pyrowave::wait_result::complete;
+      }
+
+      bool
       verify_fence_interop() {
         // Verify the real shared payload before queueing GPU work that waits
         // on it. Successful import alone does not prove the handle is usable.
         constexpr std::uint64_t d3d_signal_value = 1;
-        constexpr std::uint64_t timeout_ns = 1000000000ull;
         const auto d3d_result = context4_->Signal(fence_.Get(), d3d_signal_value);
         if (FAILED(d3d_result)) {
           init_failure("D3D11-to-Vulkan fence probe signal", static_cast<int>(d3d_result));
           return false;
         }
         context4_->Flush();
-        const auto wait_result = pyrowave_sync_object_cpu_wait(sync_.get(), d3d_signal_value, timeout_ns);
-        if (wait_result != PYROWAVE_SUCCESS) {
-          init_failure("D3D11-to-Vulkan fence probe wait", static_cast<int>(wait_result));
+        if (!wait_for_release(d3d_signal_value)) {
+          init_failure("D3D11-to-Vulkan fence probe wait-stopped-or-failed");
           return false;
         }
         sync_value_ = d3d_signal_value;
@@ -586,6 +600,7 @@ namespace platf::pyrowave_windows {
       int frame_rate_num_ = 0;
       int frame_rate_den_ = 1;
       int bitrate_kbps_ = 0;
+      std::function<bool()> stop_requested_;
       bool initialized_ = false;
       bool has_frame_ = false;
       std::unique_ptr<dxgi::shared_yuv_encode_device_t> conversion_;
@@ -611,10 +626,11 @@ namespace platf::pyrowave_windows {
     const video::config_t &config,
     std::size_t packet_boundary,
     int frame_rate_num,
-    int frame_rate_den) {
+    int frame_rate_den,
+    std::function<bool()> stop_requested) {
     try {
       auto session = std::make_unique<gpu_encoder_session_t>(
-        std::move(display), config, packet_boundary, frame_rate_num, frame_rate_den);
+        std::move(display), config, packet_boundary, frame_rate_num, frame_rate_den, std::move(stop_requested));
       if (!session->ready()) {
         BOOST_LOG(warning) << "PyroWave GPU backend could not be initialized after detailed probe";
         return {};
