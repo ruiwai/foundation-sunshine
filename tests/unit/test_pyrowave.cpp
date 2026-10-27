@@ -98,6 +98,22 @@ namespace {
     }
   }
 
+  TEST(PyrowaveCaptureTargetTest, AcceptsOnlyUnsetOrExactDisplay) {
+    static_assert(noexcept(pyrowave::validate_capture_target("display")));
+    static_assert(pyrowave::validate_capture_target("") == nullptr);
+    static_assert(pyrowave::validate_capture_target("display") == nullptr);
+    static_assert(pyrowave::validate_capture_target("window") != nullptr);
+    static_assert(pyrowave::validate_capture_target("unknown") != nullptr);
+    static_assert(pyrowave::validate_capture_target("DISPLAY") != nullptr);
+    static_assert(pyrowave::validate_capture_target(" display ") != nullptr);
+    for (const auto target : { "", "display" }) {
+      EXPECT_EQ(pyrowave::validate_capture_target(target), nullptr);
+    }
+    for (const auto target : { "window", "unknown", "DISPLAY", " display ", " ", "display ", " display" }) {
+      EXPECT_STREQ(pyrowave::validate_capture_target(target), "PyroWave supports display capture only; set capture_target=display");
+    }
+  }
+
   pyrowave::config_t
   enabled_config() {
     pyrowave::config_t config;

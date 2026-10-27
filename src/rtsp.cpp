@@ -1728,6 +1728,11 @@ namespace rtsp_stream {
           respond(sock, session, &option, 415, "UNSUPPORTED MEDIA TYPE", req->sequenceNumber, {});
           return;
         }
+        if (const auto reason = pyrowave::validate_capture_target(config::video.capture_target)) {
+          BOOST_LOG(warning) << "Rejecting experimental PyroWave video format: "sv << reason;
+          respond(sock, session, &option, 415, "UNSUPPORTED MEDIA TYPE", req->sequenceNumber, {});
+          return;
+        }
         if (const auto reason = pyrowave::validate_cursor_policy(display_cursor, false)) {
           BOOST_LOG(warning) << "Rejecting experimental PyroWave video format: "sv << reason;
           respond(sock, session, &option, 415, "UNSUPPORTED MEDIA TYPE", req->sequenceNumber, {});

@@ -1287,6 +1287,10 @@ namespace platf {
       return nullptr;
     }
 
+    if (const auto reason = pyrowave::validate_capture_target(config::video.capture_target)) {
+      BOOST_LOG(error) << reason;
+      return nullptr;
+    }
     auto disp = std::make_shared<dxgi::display_vdd_vram_t>();
     if (disp->init(config, display_name) == 0) {
       return disp;
