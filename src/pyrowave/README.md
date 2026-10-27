@@ -1,4 +1,28 @@
-# PyroWave 集成边界
+# CURRENT private Windows contract
+
+All following historical details are context only and do not override this current private contract.
+See [implementation status](../../docs/pyrowave-optimizations/implementation-status.md)
+and [deferred hardware validation](../../docs/pyrowave-optimizations/hardware-validation.md).
+
+- Windows Intel UHD770 only: capture/D3D11/Vulkan must share the adapter LUID;
+  identity is insufficient without actual feature, format, import and synchronization checks.
+- One video session, with a per-session capture worker. Mandatory borrowed VDD capture
+  -> fused conversion into shared R8 Y/U/V planes in a two-slot ring -> mandatory FP16 compute.
+- SDR 8-bit BT.709 YUV420 only, positive even dimensions, equal capture/output size.
+- Reject HDR, scaling, rotation, filters, visible host cursor and unverified idle policies;
+  require capture_cursor=false and local cursor disabled; client capabilities are not assumed.
+  Only empty/exact `display` targets and Auto/VDD capture are supported; reject other targets/backends.
+- No CPU staging, other-codec (including H.264), or capture fallback.
+- Existing refresh/control, security, audio/microphone and input behavior is preserved;
+  wire protocol/API information below is retained, not a claim of current client capabilities.
+- Encoded-bitstream CPU readback remains: this is not end-to-end zero-copy.
+- Host startup/reinit/reference polling timeouts are 5 s, pending new Windows CI;
+  driver calls, destruction and worker join are not bounded by these polling deadlines.
+- Known FP16 numerical failure is waived, NOT a pass; hardware/paired-client validation
+  is deferred. No new Windows CI pass, hardware acceptance or measured speedup is claimed.
+- Event-driven idle implementation is excluded; optional UMA/readback and sparse tuning are deferred.
+
+# HISTORICAL integration notes — not current private Windows behavior
 
 本目录保存 Sunshine 侧的 PyroWave 会话、能力和 GPU 互操作边界。Windows 构建默认
 静态编译 PyroWave C API、核心和 Granite 依赖；运行时只有在 Vulkan/GPU 互操作和

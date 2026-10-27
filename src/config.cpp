@@ -1351,6 +1351,7 @@ namespace config {
     bool_f(vars, "input_activity_boost", video.input_activity_boost);
     int_between_f(vars, "input_activity_boost_fps", video.input_activity_boost_fps, { 0, 1000 });
     int_between_f(vars, "input_activity_boost_window_ms", video.input_activity_boost_window_ms, { 0, 5000 });
+#ifndef _WIN32
     string_f(vars, "hdr_luminance_analysis", video.hdr_luminance_analysis);
     if (video.hdr_luminance_analysis == "true" ||
         video.hdr_luminance_analysis == "enabled" ||
@@ -1378,6 +1379,7 @@ namespace config {
     }
     bool_f(vars, "wgc_disable_secure_desktop", video.wgc_disable_secure_desktop);
     bool_f(vars, "dynamic_resolution_follow_display", video.dynamic_resolution_follow_display);
+#endif
     bool_f(vars, "vdd_keep_enabled", video.vdd_keep_enabled);
     bool_f(vars, "vdd_headless_create", video.vdd_headless_create_enabled);
     bool_f(vars, "vdd_reuse", video.vdd_reuse);
@@ -1388,6 +1390,7 @@ namespace config {
     bool_f(vars, "capture_cursor", video.capture_cursor);
     display_cursor = video.capture_cursor;
 
+#ifndef _WIN32
     // Downscaling quality: "fast" (bilinear+8pt average), "balanced" (bicubic), "high_quality" (future: lanczos)
     string_f(vars, "downscaling_quality", video.downscaling_quality);
     if (video.downscaling_quality.empty()) {
@@ -1415,6 +1418,7 @@ namespace config {
       video.capture_compute_shader = "auto";
     }
 
+#endif
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);
     string_f(vars, "sunshine_name", nvhttp.sunshine_name);

@@ -61,6 +61,7 @@ using namespace std::literals;
 namespace video {
 
   namespace {
+    constexpr auto private_host_wait_timeout = 5s;
     std::mutex hdr_pipeline_status_mutex;
     std::map<std::uint64_t, hdr_pipeline_status_t> hdr_pipeline_statuses;
     std::atomic<std::uint64_t> next_hdr_pipeline_status_id { 1 };
@@ -2021,8 +2022,13 @@ namespace video {
           // display_wp is modified in this thread only
           // Wait for the other shared_ptr's of display to be destroyed.
           // New displays will only be created in this thread.
+          const auto reference_deadline = std::chrono::steady_clock::now() + private_host_wait_timeout;
           while (display_wp->use_count() != 1) {
             if (!images->running()) {
+              return;
+            }
+            if (is_pyrowave && std::chrono::steady_clock::now() >= reference_deadline) {
+              BOOST_LOG(error) << "PyroWave display reference wait timed out";
               return;
             }
             // Free images that weren't consumed by the encoders. These can reference the display and prevent
@@ -4205,7 +4211,12 @@ namespace video {
     float initial_scale_x = 1.0f;
     float initial_scale_y = 1.0f;
 
+    auto display_ready_deadline = std::chrono::steady_clock::now() + private_host_wait_timeout;
     while (!shutdown_event->peek() && images->running()) {
+      if (is_pyrowave && std::chrono::steady_clock::now() >= display_ready_deadline) {
+        BOOST_LOG(error) << "PyroWave display readiness wait timed out";
+        return;
+      }
       // Wait for the main capture event when the display is being reinitialized
       if (capture_ctx.reinit_event.peek()) {
         BOOST_LOG(debug) << "[Display] Reinit event detected, waiting for display ready...";
@@ -4217,12 +4228,14 @@ namespace video {
       std::shared_ptr<platf::display_t> display;
       {
         auto lg = capture_ctx.display_wp.lock();
-        if (capture_ctx.display_wp->expired()) {
-          BOOST_LOG(verbose) << "[Display] Display object expired, waiting for reinit...";
-          // std::this_thread::sleep_for(20ms);
-          continue;
-        }
         display = capture_ctx.display_wp->lock();
+      }
+      if (!display) {
+        BOOST_LOG(verbose) << "[Display] Display object expired, waiting for reinit...";
+        if (is_pyrowave) {
+          std::this_thread::sleep_for(20ms);
+        }
+        continue;
       }
 
       // Detect display resolution changes (e.g., rotation causing width/height swap)
@@ -4441,6 +4454,7 @@ namespace video {
         capture_ctx.reinit_event, encoder,
         channel_data, dynamic_param_events,
         std::move(session_factory), std::move(backend_failure_handler));
+      display_ready_deadline = std::chrono::steady_clock::now() + private_host_wait_timeout;
     }
   }
 
@@ -4457,7 +4471,7 @@ namespace video {
       mail->event<bool>(mail::shutdown)->raise(true);
       return;
     }
-    // PyroWave uses the shared capture coordinator and encoder-loop pacing.
+    // PyroWave uses a per-session capture worker and encoder-loop pacing.
     // capture_async selects its dedicated session factory.
     capture_async(std::move(mail), config, channel_data, dynamic_param_events, packet_size);
     return;
