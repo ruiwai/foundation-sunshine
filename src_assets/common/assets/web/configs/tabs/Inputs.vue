@@ -390,7 +390,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Capture mouse cursor into the stream -->
-    <div class="mb-3">
+    <div class="mb-3" v-if="platform !== 'windows'">
       <div class="form-check form-switch">
         <input class="form-check-input" type="checkbox" id="capture_cursor"
                v-model="config.capture_cursor">
@@ -402,7 +402,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Draw mouse cursor in AMF -->
-    <div class="mb-3">
+    <div class="mb-3" v-if="platform !== 'windows'">
       <div class="form-check form-switch">
         <input class="form-check-input" type="checkbox" id="amf_draw_mouse_cursor" 
                v-model="config.amf_draw_mouse_cursor">
@@ -411,6 +411,11 @@ onBeforeUnmount(() => {
         </label>
       </div>
       <div class="form-text">{{ $t('config.amf_draw_mouse_cursor_desc') }}</div>
+    </div>
+
+    <div class="mb-3" v-if="platform === 'windows'">
+      <p class="form-text">PyroWave currently requires hidden cursor capture; client-side cursor support is unverified. Disable cursor capture and save before streaming.</p>
+      <button type="button" class="btn btn-secondary" @click="config.capture_cursor = false">Disable cursor capture</button>
     </div>
 
     <div

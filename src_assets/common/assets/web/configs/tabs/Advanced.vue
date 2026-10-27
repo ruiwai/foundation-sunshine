@@ -1,38 +1,17 @@
 <script setup>
-import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
+import { ref, computed } from 'vue'
 import PlatformLayout from '../../components/layout/PlatformLayout.vue'
 import VddPrerequisiteNotice from '../../components/common/VddPrerequisiteNotice.vue'
 import AdapterNameSelector from './advanced/AdapterNameSelector.vue'
 import CaptureCompatibilityOverrides from './advanced/CaptureCompatibilityOverrides.vue'
-import { createNativeRtxHdrBridge } from '../../utils/nativeRtxHdrBridge.js'
 
 const props = defineProps(['platform', 'config', 'global_prep_cmd'])
 
 const config = ref(props.config)
-const nativeRtxHdrManagerAvailable = ref(false)
-let nativeRtxHdrBridge
 
 const isVDDCaptureSelected = computed(() => {
   return props.platform === 'windows' && (config.value.capture === '' || config.value.capture === 'vdd')
 })
-
-onMounted(() => {
-  nativeRtxHdrBridge = createNativeRtxHdrBridge({
-    windowObject: window,
-    documentObject: document,
-    onAvailability: (available) => { nativeRtxHdrManagerAvailable.value = available },
-  })
-  window.addEventListener('message', nativeRtxHdrBridge.handleMessage)
-  nativeRtxHdrBridge.requestContext()
-})
-
-onBeforeUnmount(() => {
-  if (nativeRtxHdrBridge) {
-    window.removeEventListener('message', nativeRtxHdrBridge.handleMessage)
-  }
-})
-
-const openNativeRtxHdrManager = () => nativeRtxHdrBridge?.openManager()
 
 // === 编解码器策略（HEVC + AV1 整合 UI） ===
 // 底层仍写入 hevc_mode / av1_mode（保持 sunshine.conf 兼容），UI 层用一个策略 +
@@ -160,21 +139,6 @@ const hdrToggleDisabled = computed(() => codecStrategy.value !== 'modern')
           <div class="form-text">{{ $t('config.av1_mode_desc') }}</div>
         </div>
       </div>
-    </div>
-
-    <div class="settings-panel mt-3" v-if="platform === 'windows'">
-      <div class="form-label">{{ $t('config.hdr_enhanced') }}</div>
-      <div class="form-text">{{ $t('config.hdr_enhanced_desc') }}</div>
-      <button
-        type="button"
-        class="btn btn-outline-primary btn-sm mt-2"
-        :disabled="!nativeRtxHdrManagerAvailable"
-        @click="openNativeRtxHdrManager"
-      >
-        <i class="fas fa-sliders-h me-1" aria-hidden="true"></i>
-        {{ $t('config.hdr_enhanced_open_manager') }}
-      </button>
-      <div v-if="!nativeRtxHdrManagerAvailable" class="form-text">{{ $t('config.wgc_control_panel_only') }}</div>
     </div>
 
     <!-- Capture -->

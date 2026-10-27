@@ -51,7 +51,5 @@ test('Windows Auto and VDD share the prerequisite and explanatory state', () => 
 
 test('saved capture is not normalized and mounting does not write configuration', () => {
   assert.doesNotMatch(script, /config(?:\.value)?\.capture\s*=(?!=)/)
-  const mounted = script.match(/onMounted\(\(\) => \{([\s\S]*?)^\}\)/m)
-  assert.ok(mounted)
-  assert.doesNotMatch(mounted[1], /\bconfig\b/)
+  assert.doesNotMatch(script, /\b(?:onMounted|watch|watchEffect)\b/)
 })
