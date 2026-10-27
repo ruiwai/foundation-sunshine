@@ -25,7 +25,7 @@ namespace platf::dxgi {
   /**
    * Direct SDR R8 Y/U/V planes owned by the two-slot conversion ring.
    *
-   * PyroWave accepts only same-adapter borrowed VDD SDR frames without
+   * PyroWave accepts same-adapter borrowed or host-cursor-composited VDD SDR frames without
    * rotation, scaling or enhancement; plane release remains fence-ordered.
    */
   class shared_yuv_encode_device_t: public platf::encode_device_t {
@@ -58,6 +58,7 @@ namespace platf::dxgi {
     std::uint32_t id = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
     bool linear_gamma = false;
+    bool pyrowave_cursor_composited = false;  // Fresh owned VDD copy, consumed once.
 
     // Borrowed VDD frames use the producer's shared texture directly.
     bool borrowed_vdd_texture = false;

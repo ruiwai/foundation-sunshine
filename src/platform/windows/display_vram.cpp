@@ -429,7 +429,12 @@ namespace platf::dxgi {
       if (!wait_for_gpu_completion(device_ctx.get(), direct_completion.get(), 1000, stop_requested)) return -1;
       guard.disable();
       // Completion proves source reads finished; return the source exactly once.
-      return img.release_borrowed_vdd_after_convert(ctx.encoder_mutex.get()) ? 0 : -1;
+      if (img.borrowed_vdd_frame)
+        return img.release_borrowed_vdd_after_convert(ctx.encoder_mutex.get()) ? 0 : -1;
+      // Owned cursor copies hold key 0 too; the borrowed release is a no-op here.
+      if (ctx.encoder_mutex->ReleaseSync(img.encoder_release_key) != S_OK) return -1;
+      img.pyrowave_cursor_composited = false;
+      return 0;
     }
 
     int
@@ -3162,7 +3167,7 @@ namespace platf::dxgi {
       if (img.capture_texture) img.capture_texture->GetDesc(&desc);
       const auto &plane = planes_[selected_slot_][0];
       if (!is_pyrowave_source_valid(img, desc, adapter_luid_, generation_, plane.width, plane.height)) {
-        BOOST_LOG(error) << "PyroWave requires a fresh borrowed VDD SDR UNORM8 frame, matching adapter/generation/size, single sample/array/mip and keys 2->0";
+        BOOST_LOG(error) << "PyroWave requires fresh borrowed VDD (keys 2->0) or owned host-cursor-composited VDD (keys 0->0) SDR UNORM8, matching adapter/generation/size and single sample/array/mip";
         return -1;
       }
       return base_.convert_direct(img, fused_shader_.get(), range_cb_.get(),
@@ -4168,6 +4173,7 @@ namespace platf::dxgi {
   int
   display_vram_t::complete_img(platf::img_t *img_base, bool dummy) {
     auto img = (img_d3d_t *) img_base;
+    img->pyrowave_cursor_composited = false;
 
     // If this already has a capture texture and it's not switching dummy state, nothing to do
     if (!img->borrowed_vdd_texture && !img->borrowed_vdd_frame &&

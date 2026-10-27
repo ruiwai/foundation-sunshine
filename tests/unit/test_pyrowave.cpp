@@ -372,16 +372,16 @@ namespace {
     EXPECT_STREQ(pyrowave::validate_idle_policy(true), "PyroWave requires variable_refresh_rate disabled until paired-client idle/refresh behavior is verified");
   }
 
-  TEST(PyrowaveCursorPolicyTest, RequiresExplicitHiddenCursor) {
+  TEST(PyrowaveCursorPolicyTest, AllowsHostCursorButRejectsLocalCursor) {
     static_assert(noexcept(pyrowave::validate_cursor_policy(false, false)));
     static_assert(pyrowave::validate_cursor_policy(false, false) == nullptr);
-    static_assert(pyrowave::validate_cursor_policy(true, false) != nullptr);
+    static_assert(pyrowave::validate_cursor_policy(true, false) == nullptr);
     static_assert(pyrowave::validate_cursor_policy(false, true) != nullptr);
     static_assert(pyrowave::validate_cursor_policy(true, true) != nullptr);
     EXPECT_EQ(pyrowave::validate_cursor_policy(false, false), nullptr);
-    EXPECT_NE(pyrowave::validate_cursor_policy(true, false), nullptr);
-    EXPECT_NE(pyrowave::validate_cursor_policy(false, true), nullptr);
-    EXPECT_NE(pyrowave::validate_cursor_policy(true, true), nullptr);
+    EXPECT_EQ(pyrowave::validate_cursor_policy(true, false), nullptr);
+    EXPECT_STREQ(pyrowave::validate_cursor_policy(false, true), "PyroWave local-cursor rendering is unsupported; disable local cursor mode");
+    EXPECT_STREQ(pyrowave::validate_cursor_policy(true, true), "PyroWave local-cursor rendering is unsupported; disable local cursor mode");
   }
 
   TEST(PyrowaveRuntimeTest, AdvertisesOnlyPrivateSdrCapabilities) {

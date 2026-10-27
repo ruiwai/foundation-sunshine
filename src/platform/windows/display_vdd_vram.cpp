@@ -68,13 +68,17 @@ namespace platf::dxgi {
       BOOST_LOG(error) << "[vdd] "sv << reason;
       return capture_e::error;
     }
+    if (cursor_visible && !cursor_pipeline_ready) {
+      BOOST_LOG(error) << "[vdd] host cursor capture requires an available cursor renderer"sv;
+      return capture_e::error;
+    }
     std::uint64_t frame_qpc = 0;
     bool cursor_only = false;
     auto status = dup.next_frame(
       timeout,
       &current_frame,
       frame_qpc,
-      false,  // Hidden-only policy: do not poll cursor state.
+      cursor_visible,
       cursor_only
     );
     if (status != capture_e::ok) {
@@ -92,14 +96,28 @@ namespace platf::dxgi {
       }
     });
 
-    if (cursor_only) {
-      // Defensive: unsupported cursor-only wakeup has no image; do not pull one.
+    if (cursor_only && !cursor_visible) {
+      // Hidden capture must not publish cursor-only wakeups.
       return capture_e::timeout;
     }
 
+    vdd_capture_t::cursor_snapshot cursor_state;
+    const bool has_cursor_state = cursor_visible && cursor_pipeline_ready &&
+                                  dup.poll_cursor(cursor_state) && cursor_state.valid;
+    if (cursor_state.malformed) {
+      DXGI_OUTDUPL_POINTER_SHAPE_INFO empty_info {};
+      set_cursor_texture(device.get(), cursor_alpha, {}, empty_info);
+      set_cursor_texture(device.get(), cursor_xor, {}, empty_info);
+      BOOST_LOG(error) << "[vdd] malformed cursor metadata"sv;
+      return capture_e::error;
+    }
+    // Host cursor capture needs the driver's cursor channel. Until metadata is
+    // available, copy a clean source and retry polling on subsequent snapshots.
     const auto now = std::chrono::steady_clock::now();
-    auto frame_timestamp = frame_qpc ?
-                             now - qpc_time_difference(qpc_counter(), frame_qpc) :
+    const auto timestamp_qpc = cursor_only && has_cursor_state && cursor_state.update_qpc ?
+                                 cursor_state.update_qpc : frame_qpc;
+    auto frame_timestamp = timestamp_qpc ?
+                             now - qpc_time_difference(qpc_counter(), timestamp_qpc) :
                              now;
 
     D3D11_TEXTURE2D_DESC desc {};
@@ -153,6 +171,7 @@ namespace platf::dxgi {
         }
 
         d3d_img = std::static_pointer_cast<img_d3d_t>(img);
+        d3d_img->pyrowave_cursor_composited = false;
         if (d3d_img->abandon_borrowed_vdd_frame(false)) {
           d3d_img->blank = false;
           return true;
@@ -168,6 +187,65 @@ namespace platf::dxgi {
     if (!pull_reusable_image()) {
       log_vdd_borrow_debug_telemetry();
       return pull_interrupted ? capture_e::interrupted : capture_e::timeout;
+    }
+
+    if (cursor_visible) {
+      // Never render onto the driver's borrowed texture, even for hidden or
+      // unavailable cursor metadata. Hold producer then owned key 0, as before.
+      if (complete_img(d3d_img.get(), false) != 0) return capture_e::error;
+      texture_lock_helper lock_helper(d3d_img->capture_mutex.get());
+      if (!lock_helper.lock()) {
+        BOOST_LOG(error) << "[vdd] failed to lock owned cursor capture texture"sv;
+        return capture_e::error;
+      }
+      device_ctx->CopyResource(d3d_img->capture_texture.get(), current_frame);
+
+      auto composite_cursor = [&]() -> bool {
+        if (!has_cursor_state) return true;
+        set_cursor_sdr_white_level(cursor_state.sdr_white_level_x1000);
+        if (cursor_state.shape_updated) {
+          bool upload_succeeded = false;
+          const bool empty_hidden_shape = !cursor_state.visible &&
+                                          cursor_state.shape_buffer.empty() &&
+                                          cursor_state.width == 0 && cursor_state.height == 0;
+          if (empty_hidden_shape) {
+            DXGI_OUTDUPL_POINTER_SHAPE_INFO empty_info {};
+            upload_succeeded = set_cursor_texture(device.get(), cursor_alpha, {}, empty_info) &&
+                               set_cursor_texture(device.get(), cursor_xor, {}, empty_info);
+          }
+          else {
+            normalized_cursor_shape_t normalized;
+            if (normalize_cursor_shape(cursor_state, true, normalized)) {
+              upload_succeeded =
+                set_cursor_texture(device.get(), cursor_alpha, std::move(normalized.alpha), normalized.info) &&
+                set_cursor_texture(device.get(), cursor_xor, std::move(normalized.xor_mask), normalized.info);
+            }
+          }
+          if (!upload_succeeded) {
+            // Clear both layers, leave the shape unacked for retry, and do not
+            // publish this frame with a stale shape at the new position.
+            DXGI_OUTDUPL_POINTER_SHAPE_INFO empty_info {};
+            set_cursor_texture(device.get(), cursor_alpha, {}, empty_info);
+            set_cursor_texture(device.get(), cursor_xor, {}, empty_info);
+            BOOST_LOG(error) << "[vdd] host cursor normalization/upload failed"sv;
+            return false;
+          }
+          dup.acknowledge_cursor_shape(cursor_state.shape_id);
+        }
+        // CursorExporter coordinates already include the hotspot adjustment.
+        cursor_alpha.set_pos(cursor_state.x, cursor_state.y, width, height, display_rotation, cursor_state.visible);
+        cursor_xor.set_pos(cursor_state.x, cursor_state.y, width, height, display_rotation, cursor_state.visible);
+        if (cursor_state.visible && (cursor_alpha.texture || cursor_xor.texture)) {
+          blend_cursor(d3d_img->capture_rt.get());
+        }
+        return true;
+      };
+      if (!composite_cursor()) return capture_e::error;
+      d3d_img->pyrowave_cursor_composited = true;
+      img_out = img;
+      img_out->frame_timestamp = frame_timestamp;
+      armed = false;  // release_snapshot() still returns the producer slot.
+      return capture_e::ok;
     }
 
     auto try_borrow_current_frame = [&]() -> capture_e {

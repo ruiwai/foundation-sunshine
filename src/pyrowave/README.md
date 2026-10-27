@@ -6,11 +6,14 @@ and [deferred hardware validation](../../docs/pyrowave-optimizations/hardware-va
 
 - Windows Intel UHD770 only: capture/D3D11/Vulkan must share the adapter LUID;
   identity is insufficient without actual feature, format, import and synchronization checks.
-- One video session, with a per-session capture worker. Mandatory borrowed VDD capture
+- One video session, with a per-session capture worker. Mandatory VDD capture
   -> fused conversion into shared R8 Y/U/V planes in a two-slot ring -> mandatory FP16 compute.
+- Host cursor capture (`capture_cursor=true`) composites onto an owned RGB texture using an extra GPU copy;
+  it requires VDD cursor metadata. Hidden capture (`capture_cursor=false`) uses the direct borrowed texture path.
+  Host cursor hardware correctness and performance remain unverified.
 - SDR 8-bit BT.709 YUV420 only, positive even dimensions, equal capture/output size.
-- Reject HDR, scaling, rotation, filters, visible host cursor and unverified idle policies;
-  require capture_cursor=false and local cursor disabled; client capabilities are not assumed.
+- Reject HDR, scaling, rotation, filters and unverified idle policies;
+  client-side local cursor rendering remains unsupported and must be disabled; client capabilities are not assumed.
   Only empty/exact `display` targets and Auto/VDD capture are supported; reject other targets/backends.
 - No CPU staging, other-codec (including H.264), or capture fallback.
 - Existing refresh/control, security, audio/microphone and input behavior is preserved;

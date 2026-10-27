@@ -390,7 +390,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Capture mouse cursor into the stream -->
-    <div class="mb-3" v-if="platform !== 'windows'">
+    <div class="mb-3">
       <div class="form-check form-switch">
         <input class="form-check-input" type="checkbox" id="capture_cursor"
                v-model="config.capture_cursor">
@@ -414,8 +414,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="mb-3" v-if="platform === 'windows'">
-      <p class="form-text">PyroWave currently requires hidden cursor capture; client-side cursor support is unverified. Disable cursor capture and save before streaming.</p>
-      <button type="button" class="btn btn-secondary" @click="config.capture_cursor = false">Disable cursor capture</button>
+      <p class="form-text">PyroWave supports host-composited cursor capture using an extra GPU copy and requires VDD cursor metadata. Client-side local cursor rendering remains unsupported. Hardware correctness and performance are unverified.</p>
     </div>
 
     <div

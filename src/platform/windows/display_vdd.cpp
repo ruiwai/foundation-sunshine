@@ -991,6 +991,10 @@ namespace platf::dxgi {
   bool
   vdd_capture_t::poll_cursor(cursor_snapshot &out) {
     out = {};
+    auto invalid = [&]() {
+      out.malformed = true;
+      return false;
+    };
     if (!m_pCursorMeta && !ensure_cursor_channel_attached()) {
       return false;
     }
@@ -1013,13 +1017,11 @@ namespace platf::dxgi {
 
       CursorSharedMetadata header {};
       std::memcpy(&header, meta, sizeof(header));
-      if (header.ShapeBufferSize > VDD_CURSOR_MAX_BYTES) {
-        continue;
-      }
+      const bool oversized_payload = header.ShapeBufferSize > VDD_CURSOR_MAX_BYTES;
 
       const bool shape_updated = header.ShapeId != m_lastSeenCursorShapeId;
       std::vector<uint8_t> shape_buffer;
-      if (shape_updated && header.ShapeBufferSize > 0) {
+      if (!oversized_payload && shape_updated && header.ShapeBufferSize > 0) {
         const auto *payload = reinterpret_cast<const uint8_t *>(meta + 1);
         shape_buffer.assign(payload, payload + header.ShapeBufferSize);
       }
@@ -1034,11 +1036,15 @@ namespace platf::dxgi {
         continue;
       }
 
-      if (header.Magic != VDD_CURSOR_MAGIC || header.Version != VDD_CURSOR_VERSION) {
+      const CursorSharedMetadata zero_header {};
+      if (std::memcmp(&header, &zero_header, sizeof(header)) == 0) {
         return false;
       }
+      if (oversized_payload || header.Magic != VDD_CURSOR_MAGIC || header.Version != VDD_CURSOR_VERSION) {
+        return invalid();
+      }
       if (header.ShapeType > 2) {
-        return false;
+        return invalid();
       }
 
       constexpr UINT32 kMaxCursorWidth = 256;
@@ -1052,7 +1058,7 @@ namespace platf::dxgi {
       if (!empty_hidden_shape &&
           (header.Width == 0 || header.Width > kMaxCursorWidth ||
            header.Height == 0 || header.Height > max_height)) {
-        return false;
+        return invalid();
       }
 
       UINT64 required_bytes = 0;
@@ -1061,18 +1067,18 @@ namespace platf::dxgi {
       }
       else if (header.ShapeType == 0 /* MONOCHROME */) {
         if ((header.Height & 1u) != 0u || header.Pitch < (header.Width + 7u) / 8u) {
-          return false;
+          return invalid();
         }
         required_bytes = static_cast<UINT64>(header.Pitch) * header.Height;
       }
       else {
         if (header.Pitch < static_cast<UINT64>(header.Width) * 4u) {
-          return false;
+          return invalid();
         }
         required_bytes = static_cast<UINT64>(header.Pitch) * header.Height;
       }
       if (required_bytes > VDD_CURSOR_MAX_BYTES || header.ShapeBufferSize < required_bytes) {
-        return false;  // header/payload mismatch; likely a torn read
+        return invalid();
       }
       if (shape_updated) {
         shape_buffer.resize(static_cast<size_t>(required_bytes));

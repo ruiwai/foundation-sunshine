@@ -707,6 +707,7 @@ namespace platf::dxgi {
      */
     struct cursor_snapshot {
       bool     valid = false;          ///< True if at least one publish observed.
+      bool     malformed = false;      ///< Coherent metadata failed validation.
       bool     visible = false;
       bool     shape_updated = false;  ///< True iff shape_id changed since last poll.
       bool     position_updated = false;

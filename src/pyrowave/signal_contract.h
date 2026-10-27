@@ -14,8 +14,9 @@ namespace pyrowave {
   }
 
   constexpr const char *validate_cursor_policy(bool visible, bool local_mode) noexcept {
-    if (visible || local_mode)
-      return "PyroWave requires capture_cursor=false and local cursor disabled until paired-client cursor support is verified";
+    (void) visible;  // Host compositing supports both visible and hidden capture.
+    if (local_mode)
+      return "PyroWave local-cursor rendering is unsupported; disable local cursor mode";
     return nullptr;
   }
 
