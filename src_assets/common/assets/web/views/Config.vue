@@ -271,7 +271,7 @@ const {
   resolutions,
   currentTab,
   global_prep_cmd,
-  tabs,
+  tabs: configTabs,
   initTabs,
   loadConfig,
   save: saveConfig,
@@ -280,6 +280,10 @@ const {
   handleHash,
   hasUnsavedChanges,
 } = useConfig()
+
+const tabs = computed(() => platform.value === 'windows'
+  ? configTabs.value.filter((tab) => tab.id !== 'encoders')
+  : configTabs.value)
 
 const showSaveToast = ref(false)
 const showRestartToast = ref(false)
@@ -299,7 +303,7 @@ const hasUnsaved = computed(() => {
   return hasUnsavedChanges()
 })
 
-const isEncoderCurrentTab = computed(() => ENCODER_TAB_IDS.has(currentTab.value))
+const isEncoderCurrentTab = computed(() => platform.value !== 'windows' && ENCODER_TAB_IDS.has(currentTab.value))
 
 const isEncoderTabActive = (tab) => tab.type === 'group' && tab.children?.some((child) => child.id === currentTab.value)
 
@@ -430,6 +434,10 @@ const handleOutsideClick = (event) => {
 
 const handleConfigHash = () => {
   handleHash()
+  if (platform.value === 'windows' && (currentTab.value === 'encoders' || ENCODER_TAB_IDS.has(currentTab.value))) {
+    currentTab.value = 'advanced'
+    return
+  }
 
   if (currentTab.value === 'encoders') {
     const encoderGroup = tabs.value.find((tab) => tab.id === 'encoders')

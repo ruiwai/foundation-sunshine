@@ -89,7 +89,7 @@ const hdrToggleDisabled = computed(() => codecStrategy.value !== 'modern')
 <template>
   <div class="config-page">
     <!-- Codec Strategy (整合 HEVC + AV1) -->
-    <div class="settings-panel settings-panel--accent">
+    <div class="settings-panel settings-panel--accent" v-if="platform !== 'windows'">
       <label for="codec_strategy" class="form-label">{{ $t('config.codec_strategy') }}</label>
       <select id="codec_strategy" class="form-select" v-model="codecStrategy">
         <option value="auto">{{ $t('config.codec_strategy_auto') }}</option>
@@ -207,7 +207,11 @@ const hdrToggleDisabled = computed(() => codecStrategy.value !== 'modern')
     </div>
 
     <!-- Encoder -->
-    <div class="settings-field mt-3">
+    <div class="settings-field mt-3" v-if="platform === 'windows'">
+      <div class="form-label">{{ $t('config.encoder') }}</div>
+      <div>PyroWave (SDR BT.709 YUV420)</div>
+    </div>
+    <div class="settings-field mt-3" v-if="platform !== 'windows'">
       <label for="encoder" class="form-label">{{ $t('config.encoder') }}</label>
       <select id="encoder" class="form-select" v-model="config.encoder">
         <option value="">{{ $t('_common.autodetect') }}</option>
