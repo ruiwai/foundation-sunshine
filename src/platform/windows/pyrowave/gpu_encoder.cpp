@@ -17,6 +17,7 @@
 #include "src/pyrowave/packetizer.h"
 #include "src/streaming/perf_recorder.h"
 #include "src/utility.h"
+#include "shared_fences.h"
 #include "transport.h"
 
 extern "C" {
@@ -176,37 +177,13 @@ namespace platf::pyrowave_windows {
           return;
         }
 
-        const auto fence_result = device5_->CreateFence(
-          0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence_));
+        const auto fence_result = fences_.initialize(device5_.Get());
         if (FAILED(fence_result)) {
-          init_failure("D3D11 shared fence", static_cast<int>(fence_result));
+          init_failure("D3D11 directional shared fences", static_cast<int>(fence_result));
           return;
         }
-
-        HANDLE fence_handle = nullptr;
-        const auto shared_handle_result = fence_->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &fence_handle);
-        if (FAILED(shared_handle_result) ||
-            fence_handle == nullptr) {
-          init_failure("D3D11 fence shared handle", static_cast<int>(shared_handle_result));
-          return;
-        }
-
-        pyrowave_sync_object raw_sync = nullptr;
-        const pyrowave_sync_object_create_info sync_info {
-          .device = device_.get(),
-          .external_handle = reinterpret_cast<pyrowave_os_handle>(fence_handle),
-          .handle_type = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT,
-          .semaphore_type = VK_SEMAPHORE_TYPE_TIMELINE,
-          .import_flags = 0,
-        };
-        const auto sync_result = pyrowave_sync_object_create(&sync_info, &raw_sync);
-        if (sync_result != PYROWAVE_SUCCESS || raw_sync == nullptr) {
-          init_failure("PyroWave external fence import", static_cast<int>(sync_result));
-          CloseHandle(fence_handle);
-          return;
-        }
-        sync_.reset(raw_sync);
-        if (!verify_fence_interop()) {
+        if (!initialize_sync(fences_.acquire(), acquire_sync_) ||
+            !initialize_sync(fences_.release(), release_sync_) || !verify_fence_interop()) {
           return;
         }
 
@@ -372,6 +349,9 @@ namespace platf::pyrowave_windows {
         if (!ready() || !has_frame_) {
           return encode_failure(frame_number, "encoder-not-ready");
         }
+        if (sync_value_ >= UINT64_MAX - 1) {
+          return encode_failure(frame_number, "timeline-exhausted");
+        }
 
         const auto slot = ring_.begin_encode();
         if (!slot) return encode_failure(frame_number, "plane-ring-admission");
@@ -380,9 +360,8 @@ namespace platf::pyrowave_windows {
                             << ", packet_boundary=" << packet_boundary_
                             << ", bitstream_capacity=" << bitstream_->size();
 
-        const auto acquire_value = sync_value_ + 1;
-        const auto release_value = acquire_value + 1;
-        const auto signal_result = context4_->Signal(fence_.Get(), acquire_value);
+        const auto value = sync_value_ + 1;
+        const auto signal_result = context4_->Signal(fences_.acquire(), value);
         if (FAILED(signal_result)) {
           return encode_failure(frame_number, "d3d11-fence-signal", static_cast<int>(signal_result));
         }
@@ -399,16 +378,16 @@ namespace platf::pyrowave_windows {
           .images = references.data(),
           .num_images = references.size(),
           .sync = {
-            pyrowave_sync_object_get_semaphore(sync_.get()),
-            acquire_value,
+            pyrowave_sync_object_get_semaphore(acquire_sync_.get()),
+            value,
           },
         };
         const pyrowave_gpu_sync_operation release {
           .images = references.data(),
           .num_images = references.size(),
           .sync = {
-            pyrowave_sync_object_get_semaphore(sync_.get()),
-            release_value,
+            pyrowave_sync_object_get_semaphore(release_sync_.get()),
+            value,
           },
         };
 
@@ -428,15 +407,15 @@ namespace platf::pyrowave_windows {
           return encode_failure(frame_number, "pyrowave-gpu-encode", static_cast<int>(encode_result));
         }
         const auto host_encode_return = std::chrono::steady_clock::now();
-        if (!wait_for_release(release_value)) {
+        if (!wait_for_sync(release_sync_.get(), value)) {
           return encode_failure(frame_number, "pyrowave-fence-wait-stopped-or-failed");
         }
-        if (!verify_fence_return(release_value)) {
+        if (!verify_fence_return(value)) {
           return encode_failure(frame_number, "vulkan-to-d3d11-fence-probe");
         }
         if (!conversion_->release_source_after_encode()) return encode_failure(frame_number, "source-release-after-encode");
         if (stop_requested_()) return encode_failure(frame_number, "release-stopped-or-failed");
-        sync_value_ = release_value;
+        sync_value_ = value;
         if (!ring_.finish_encode(*slot)) return encode_failure(frame_number, "plane-ring-release");
         const auto host_release_checked = std::chrono::steady_clock::now();
 
@@ -503,9 +482,36 @@ namespace platf::pyrowave_windows {
 
     private:
       bool
-      wait_for_release(std::uint64_t value) {
+      initialize_sync(ID3D11Fence *fence, sync_ptr &sync) {
+        HANDLE fence_handle = nullptr;
+        const auto shared_handle_result = fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &fence_handle);
+        if (FAILED(shared_handle_result) || fence_handle == nullptr) {
+          init_failure("D3D11 fence shared handle", static_cast<int>(shared_handle_result));
+          return false;
+        }
+
+        pyrowave_sync_object raw_sync = nullptr;
+        const pyrowave_sync_object_create_info sync_info {
+          .device = device_.get(),
+          .external_handle = reinterpret_cast<pyrowave_os_handle>(fence_handle),
+          .handle_type = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT,
+          .semaphore_type = VK_SEMAPHORE_TYPE_TIMELINE,
+          .import_flags = 0,
+        };
+        const auto sync_result = pyrowave_sync_object_create(&sync_info, &raw_sync);
+        if (sync_result != PYROWAVE_SUCCESS || raw_sync == nullptr) {
+          init_failure("PyroWave external fence import", static_cast<int>(sync_result));
+          CloseHandle(fence_handle);
+          return false;
+        }
+        sync.reset(raw_sync);
+        return true;
+      }
+
+      bool
+      wait_for_sync(pyrowave_sync_object sync, std::uint64_t value) {
         return pyrowave::bounded_wait([&] {
-          const auto result = pyrowave_sync_object_cpu_wait(sync_.get(), value, 1000000ull);
+          const auto result = pyrowave_sync_object_cpu_wait(sync, value, 1000000ull);
           if (result == PYROWAVE_SUCCESS) return pyrowave::wait_result::complete;
           return result == PYROWAVE_TIMEOUT ? pyrowave::wait_result::pending : pyrowave::wait_result::failed;
         }, stop_requested_, std::chrono::steady_clock::now, std::chrono::seconds(1)) == pyrowave::wait_result::complete;
@@ -516,13 +522,13 @@ namespace platf::pyrowave_windows {
         // Verify the real shared payload before queueing GPU work that waits
         // on it. Successful import alone does not prove the handle is usable.
         constexpr std::uint64_t d3d_signal_value = 1;
-        const auto d3d_result = context4_->Signal(fence_.Get(), d3d_signal_value);
+        const auto d3d_result = context4_->Signal(fences_.acquire(), d3d_signal_value);
         if (FAILED(d3d_result)) {
           init_failure("D3D11-to-Vulkan fence probe signal", static_cast<int>(d3d_result));
           return false;
         }
         context4_->Flush();
-        if (!wait_for_release(d3d_signal_value)) {
+        if (!wait_for_sync(acquire_sync_.get(), d3d_signal_value)) {
           init_failure("D3D11-to-Vulkan fence probe wait-stopped-or-failed");
           return false;
         }
@@ -535,7 +541,7 @@ namespace platf::pyrowave_windows {
         // Check every GPU release before releasing its ring slot or publishing a frame;
         // do not require an additional, unused host-signal path to work.
         if (pyrowave::bounded_wait([&] {
-          const auto completed = fence_->GetCompletedValue();
+          const auto completed = fences_.release()->GetCompletedValue();
           if (completed == UINT64_MAX) return pyrowave::wait_result::failed;
           if (completed >= value) return pyrowave::wait_result::complete;
           Sleep(1);
@@ -544,14 +550,14 @@ namespace platf::pyrowave_windows {
           init_failure("Vulkan-to-D3D11 fence return stopped-or-failed");
           return false;
         }
-        const auto completed_value = fence_->GetCompletedValue();
+        const auto completed_value = fences_.release()->GetCompletedValue();
         if (!pyrowave::is_fence_completion_valid(completed_value, value)) {
           init_failure("Vulkan-to-D3D11 fence probe value");
           return false;
         }
         if (!fence_return_verified_) {
           fence_return_verified_ = true;
-          BOOST_LOG(debug) << "[PyroWaveEncoder][GPU] shared fence verified in both directions";
+          BOOST_LOG(debug) << "[PyroWaveEncoder][GPU] directional shared fences verified";
         }
         return true;
       }
@@ -600,10 +606,11 @@ namespace platf::pyrowave_windows {
       std::unique_ptr<dxgi::shared_yuv_encode_device_t> conversion_;
       Microsoft::WRL::ComPtr<ID3D11Device5> device5_;
       Microsoft::WRL::ComPtr<ID3D11DeviceContext4> context4_;
-      Microsoft::WRL::ComPtr<ID3D11Fence> fence_;
+      shared_fences_t fences_;
       device_ptr device_;
       encoder_ptr encoder_;
-      sync_ptr sync_;
+      sync_ptr acquire_sync_;
+      sync_ptr release_sync_;
       pyrowave::plane_ring_t ring_;
       std::array<std::array<image_ptr, 3>, 2> images_;
       std::array<pyrowave_gpu_buffers, 2> buffers_ {};
