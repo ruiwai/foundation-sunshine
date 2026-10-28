@@ -308,7 +308,7 @@ namespace platf::dxgi {
   }
 
   class d3d_base_encode_device final {
-    pending_pyrowave_source_t pending_source;
+    pending_pyrowave_sources_t pending_sources;
 
     // HLG encoding parameters. Keep the layout in sync with the shader cbuffer.
     struct alignas(16) HdrEncodingParams {
@@ -401,9 +401,9 @@ namespace platf::dxgi {
     }
 
     int
-    convert_direct(img_d3d_t &img, ID3D11ComputeShader *shader, ID3D11Buffer *range,
+    convert_direct(std::size_t slot, img_d3d_t &img, ID3D11ComputeShader *shader, ID3D11Buffer *range,
       std::array<ID3D11UnorderedAccessView *, 3> outputs, UINT width, UINT height, const std::function<bool()> &stop_requested) {
-      if (pending_source.pending()) return -1;
+      if (pending_sources.pending(slot)) return -1;
       if (stop_requested && stop_requested()) return -1;
       if (vram_timing_enabled) poll_gpu_timing_samples();
       for (auto it = img_ctx_map.begin(); it != img_ctx_map.end();) {
@@ -414,12 +414,13 @@ namespace platf::dxgi {
       if (initialize_image_context(img, ctx)) return -1;
       // Obtain ownership before acquiring the mutex: shared_from_this may throw.
       auto source_image = std::static_pointer_cast<img_d3d_t>(img.shared_from_this());
+      if (!pending_sources.can_hold(slot, source_image.get(), ctx.encoder_mutex.get())) return -1;
       const auto status = ctx.encoder_mutex->AcquireSync(img.encoder_acquire_key, 16);
       if (status != S_OK) {
         BOOST_LOG(error) << "PyroWave direct source acquire failed: " << util::log_hex(status);
         return -1;
       }
-      if (!pending_source.hold(std::move(source_image), ctx.encoder_mutex.get())) return -1;
+      if (!pending_sources.hold(slot, std::move(source_image), ctx.encoder_mutex.get())) return -1;
       auto cleanup = [&]() {
         ID3D11ShaderResourceView *null_srv = nullptr;
         ID3D11UnorderedAccessView *null_uavs[] = { nullptr, nullptr, nullptr };
@@ -461,7 +462,7 @@ namespace platf::dxgi {
       return 0;
     }
 
-    bool release_source_after_encode() { return pending_source.complete(); }
+    bool release_source_after_encode(std::size_t slot) { return pending_sources.complete(slot); }
 
     int
     convert(platf::img_t &img_base) {
@@ -3196,14 +3197,14 @@ namespace platf::dxgi {
         BOOST_LOG(error) << "PyroWave requires fresh borrowed VDD (keys 2->0), a fresh owned cursor copy or an owned DDX image (keys 0->0), SDR UNORM8, matching adapter/generation/size and single sample/array/mip";
         return -1;
       }
-      return base_.convert_direct(img, fused_shader_.get(), range_cb_.get(),
+      return base_.convert_direct(selected_slot_, img, fused_shader_.get(), range_cb_.get(),
         { plane_uavs_[selected_slot_][0].get(), plane_uavs_[selected_slot_][1].get(), plane_uavs_[selected_slot_][2].get() },
         plane.width, plane.height, stop_requested_);
     }
 
     ID3D11Device *d3d_device() noexcept override { return base_.device.get(); }
     ID3D11DeviceContext *d3d_context() noexcept override { return base_.device_ctx.get(); }
-    bool release_source_after_encode() override { return base_.release_source_after_encode(); }
+    bool release_source_after_encode(std::size_t slot) override { return base_.release_source_after_encode(slot); }
     const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept override { return slot < planes_.size() ? &planes_[slot] : nullptr; }
     bool select_plane_slot(std::size_t slot) noexcept override {
       if (slot >= planes_.size()) return false;

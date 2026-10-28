@@ -34,7 +34,7 @@ namespace platf::dxgi {
     virtual ID3D11DeviceContext *d3d_context() noexcept = 0;
     virtual const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept = 0;
     virtual bool select_plane_slot(std::size_t slot) noexcept = 0;
-    virtual bool release_source_after_encode() = 0;
+    virtual bool release_source_after_encode(std::size_t slot) = 0;
     // SDR-only: clear invalid HDR statistics and return false.
     virtual bool collect_hdr_luminance_stats() = 0;
   };
@@ -100,10 +100,30 @@ namespace platf::dxgi {
     // Empty (plane replay) is a no-op; failed releases retain both references.
     bool complete();
     bool pending() const { return static_cast<bool>(image_); }
+    bool owns(const img_d3d_t *image, const IDXGIKeyedMutex *mutex) const noexcept {
+      return (image && image_.get() == image) || (mutex && mutex_.get() == mutex);
+    }
     // Destruction only drops references: never ReleaseSync on unproven abort.
   private:
     std::shared_ptr<img_d3d_t> image_;
     keyed_mutex_t mutex_;
+  };
+
+  // Single-thread only; duplicate checks cover exact objects/pointers, not COM aliases.
+  class pending_pyrowave_sources_t {
+  public:
+    static constexpr std::size_t size = 2;
+    pending_pyrowave_sources_t() = default;
+    pending_pyrowave_sources_t(const pending_pyrowave_sources_t &) = delete;
+    pending_pyrowave_sources_t &operator=(const pending_pyrowave_sources_t &) = delete;
+    pending_pyrowave_sources_t(pending_pyrowave_sources_t &&) = delete;
+    pending_pyrowave_sources_t &operator=(pending_pyrowave_sources_t &&) = delete;
+    bool can_hold(std::size_t slot, const img_d3d_t *image, const IDXGIKeyedMutex *mutex) const noexcept;
+    bool hold(std::size_t slot, std::shared_ptr<img_d3d_t> image, IDXGIKeyedMutex *mutex);
+    bool complete(std::size_t slot);
+    bool pending(std::size_t slot) const noexcept;
+  private:
+    std::array<pending_pyrowave_source_t, size> sources_;
   };
 
   bool

@@ -49,6 +49,30 @@ namespace platf::dxgi {
   }
 
   bool
+  pending_pyrowave_sources_t::can_hold(std::size_t slot, const img_d3d_t *image, const IDXGIKeyedMutex *mutex) const noexcept {
+    if (slot >= size || !image || !mutex || sources_[slot].pending()) return false;
+    for (const auto &source : sources_) {
+      if (source.owns(image, mutex)) return false;
+    }
+    return true;
+  }
+
+  bool
+  pending_pyrowave_sources_t::hold(std::size_t slot, std::shared_ptr<img_d3d_t> image, IDXGIKeyedMutex *mutex) {
+    return can_hold(slot, image.get(), mutex) && sources_[slot].hold(std::move(image), mutex);
+  }
+
+  bool
+  pending_pyrowave_sources_t::complete(std::size_t slot) {
+    return slot < size && sources_[slot].complete();
+  }
+
+  bool
+  pending_pyrowave_sources_t::pending(std::size_t slot) const noexcept {
+    return slot >= size || sources_[slot].pending();
+  }
+
+  bool
   is_pyrowave_source_valid(const img_d3d_t &img, const D3D11_TEXTURE2D_DESC &desc,
     std::uint64_t adapter_luid, std::uint64_t generation, UINT width, UINT height) noexcept {
     const auto &frame = img.frame_desc;

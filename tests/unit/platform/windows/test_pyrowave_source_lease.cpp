@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <deque>
+#include <type_traits>
 #include <vector>
 
 #include "src/platform/windows/display_vram_internal.h"
@@ -167,6 +168,130 @@ namespace {
     EXPECT_FALSE(img->borrowed_vdd_frame); EXPECT_EQ(counter->load(), 0u);
     EXPECT_TRUE(state.destroyed); EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0}));
     EXPECT_TRUE(lease.complete()); EXPECT_EQ(state.release_keys.size(), 1u);
+  }
+
+  using source_pool_t = platf::dxgi::pending_pyrowave_sources_t;
+  static_assert(!std::is_copy_constructible_v<source_pool_t> && !std::is_copy_assignable_v<source_pool_t>);
+  static_assert(!std::is_move_constructible_v<source_pool_t> && !std::is_move_assignable_v<source_pool_t>);
+
+  class PendingPyrowaveSources: public testing::Test {
+  protected:
+    std::array<mutex_state, source_pool_t::size> states;
+    std::array<platf::dxgi::keyed_mutex_t, source_pool_t::size> mutexes {
+      platf::dxgi::keyed_mutex_t(new scripted_mutex(states[0])),
+      platf::dxgi::keyed_mutex_t(new scripted_mutex(states[1]))};
+    std::array<std::shared_ptr<img_d3d_t>, source_pool_t::size> images;
+    source_pool_t pool;
+    void SetUp() override {
+      for (std::size_t slot = 0; slot < images.size(); ++slot) {
+        images[slot] = std::make_shared<img_d3d_t>();
+        images[slot]->pyrowave_ddx_frame = true;
+        images[slot]->encoder_release_key = 7 + slot;
+      }
+    }
+  };
+
+  TEST_F(PendingPyrowaveSources, MatchingCompletionKeepsOtherSourceAndReferencesAlive) {
+    std::weak_ptr<img_d3d_t> first = images[0], second = images[1];
+    for (std::size_t slot = 0; slot < images.size(); ++slot) {
+      EXPECT_TRUE(pool.can_hold(slot, images[slot].get(), mutexes[slot].get()));
+      ASSERT_EQ(mutexes[slot]->AcquireSync(0, 16), S_OK);
+      ASSERT_TRUE(pool.hold(slot, images[slot], mutexes[slot].get()));
+      images[slot].reset(); mutexes[slot].reset();
+      EXPECT_TRUE(pool.pending(slot)); EXPECT_FALSE(states[slot].destroyed);
+    }
+    EXPECT_FALSE(first.expired()); EXPECT_FALSE(second.expired());
+    EXPECT_TRUE(pool.complete(1)); EXPECT_FALSE(pool.pending(1));
+    EXPECT_TRUE(second.expired()); EXPECT_TRUE(states[1].destroyed);
+    EXPECT_TRUE(pool.pending(0)); EXPECT_FALSE(first.expired()); EXPECT_FALSE(states[0].destroyed);
+    EXPECT_TRUE(states[0].release_keys.empty());
+    EXPECT_EQ(states[1].release_keys, (std::vector<UINT64> {8}));
+    EXPECT_TRUE(pool.complete(1)); EXPECT_EQ(states[1].release_keys.size(), 1u);
+    EXPECT_TRUE(pool.complete(0)); EXPECT_FALSE(pool.pending(0));
+    EXPECT_TRUE(first.expired()); EXPECT_TRUE(states[0].destroyed);
+    EXPECT_EQ(states[0].release_keys, (std::vector<UINT64> {7}));
+    for (const auto &state : states) EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0}));
+  }
+
+  TEST_F(PendingPyrowaveSources, FailedCompletionRetainsOnlyItsSlotWhileOtherCanComplete) {
+    states[0].release = {E_FAIL, S_FALSE, S_OK};
+    std::weak_ptr<img_d3d_t> first = images[0];
+    for (std::size_t slot = 0; slot < images.size(); ++slot) {
+      ASSERT_EQ(mutexes[slot]->AcquireSync(0, 16), S_OK);
+      ASSERT_TRUE(pool.hold(slot, images[slot], mutexes[slot].get()));
+      images[slot].reset(); mutexes[slot].reset();
+    }
+    EXPECT_FALSE(pool.complete(0)); EXPECT_TRUE(pool.pending(0));
+    EXPECT_FALSE(first.expired()); EXPECT_FALSE(states[0].destroyed);
+    EXPECT_TRUE(pool.complete(1)); EXPECT_FALSE(pool.pending(1)); EXPECT_TRUE(states[1].destroyed);
+    EXPECT_FALSE(pool.complete(0)); EXPECT_TRUE(pool.pending(0));
+    EXPECT_FALSE(first.expired()); EXPECT_FALSE(states[0].destroyed);
+    EXPECT_TRUE(pool.complete(0)); EXPECT_FALSE(pool.pending(0));
+    EXPECT_TRUE(first.expired()); EXPECT_TRUE(states[0].destroyed);
+    EXPECT_EQ(states[0].release_keys, (std::vector<UINT64> {7, 7, 7}));
+    EXPECT_EQ(states[1].release_keys, (std::vector<UINT64> {8}));
+    for (const auto &state : states) EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0}));
+  }
+
+  TEST_F(PendingPyrowaveSources, RejectsInvalidNullOccupiedAndExactDuplicatesWithoutMutexCalls) {
+    const auto invalid = source_pool_t::size;
+    EXPECT_TRUE(pool.complete(0)); EXPECT_TRUE(pool.complete(1));
+    EXPECT_FALSE(pool.complete(invalid)); EXPECT_TRUE(pool.pending(invalid));
+    EXPECT_FALSE(pool.pending(0)); EXPECT_FALSE(pool.pending(1));
+    ASSERT_EQ(mutexes[0]->AcquireSync(0, 16), S_OK);
+    ASSERT_TRUE(pool.hold(0, images[0], mutexes[0].get()));
+    const auto reject = [&](std::size_t slot, const std::shared_ptr<img_d3d_t> &image, IDXGIKeyedMutex *mutex) {
+      EXPECT_FALSE(pool.can_hold(slot, image.get(), mutex));
+      EXPECT_FALSE(pool.hold(slot, image, mutex));
+    };
+    reject(invalid, images[1], mutexes[1].get());
+    reject(1, nullptr, mutexes[1].get()); reject(1, images[1], nullptr);
+    reject(0, images[1], mutexes[1].get()); // Occupied target, otherwise distinct.
+    // Exact identity only: fake COM cannot prove alias detection through distinct wrappers.
+    reject(1, images[0], mutexes[1].get()); reject(1, images[1], mutexes[0].get());
+    EXPECT_TRUE(pool.pending(0)); EXPECT_FALSE(pool.pending(1));
+    EXPECT_TRUE(pool.can_hold(1, images[1].get(), mutexes[1].get()));
+    std::weak_ptr<img_d3d_t> rejected = images[1];
+    images[1].reset(); mutexes[1].reset();
+    EXPECT_TRUE(rejected.expired()); EXPECT_TRUE(states[1].destroyed);
+    EXPECT_EQ(states[0].acquire_keys, (std::vector<UINT64> {0}));
+    EXPECT_TRUE(states[1].acquire_keys.empty());
+    for (const auto &state : states) EXPECT_TRUE(state.release_keys.empty());
+  }
+
+  TEST_F(PendingPyrowaveSources, DestructorNeverUnlocksUnprovenOwnedDdxSources) {
+    std::weak_ptr<img_d3d_t> first = images[0], second = images[1];
+    {
+      source_pool_t unproven;
+      for (std::size_t slot = 0; slot < images.size(); ++slot) {
+        ASSERT_EQ(mutexes[slot]->AcquireSync(0, 16), S_OK);
+        ASSERT_TRUE(unproven.hold(slot, images[slot], mutexes[slot].get()));
+        images[slot].reset(); mutexes[slot].reset();
+        EXPECT_FALSE(states[slot].destroyed);
+      }
+      EXPECT_FALSE(first.expired()); EXPECT_FALSE(second.expired());
+    }
+    EXPECT_TRUE(first.expired()); EXPECT_TRUE(second.expired());
+    for (const auto &state : states) {
+      EXPECT_TRUE(state.destroyed); EXPECT_TRUE(state.release_keys.empty());
+      EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0}));
+    }
+  }
+
+  TEST_F(PendingPyrowaveSources, SuccessfulDdxCompletionAllowsSameSourceInNextSlot) {
+    states[0].acquire = {S_OK, S_OK}; states[0].release = {S_OK, S_OK};
+    images[0]->id = 17; images[0]->frame_desc.source_generation = 23;
+    for (std::size_t slot = 0; slot < source_pool_t::size; ++slot) {
+      ASSERT_TRUE(pool.can_hold(slot, images[0].get(), mutexes[0].get()));
+      // Independent ownership intervals only; scripted API success is not GPU proof.
+      ASSERT_EQ(mutexes[0]->AcquireSync(0, 16), S_OK);
+      ASSERT_TRUE(pool.hold(slot, images[0], mutexes[0].get()));
+      EXPECT_TRUE(pool.complete(slot)); EXPECT_FALSE(pool.pending(slot));
+      EXPECT_TRUE(images[0]->pyrowave_ddx_frame); EXPECT_FALSE(images[0]->pyrowave_cursor_composited);
+      EXPECT_EQ(images[0]->id, 17u); EXPECT_EQ(images[0]->frame_desc.source_generation, 23u);
+    }
+    EXPECT_EQ(states[0].acquire_keys, (std::vector<UINT64> {0, 0}));
+    EXPECT_EQ(states[0].release_keys, (std::vector<UINT64> {7, 7}));
   }
 
   class OwnedSourceRelease: public testing::Test {

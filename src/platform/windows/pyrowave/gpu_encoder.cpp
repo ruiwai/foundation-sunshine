@@ -49,6 +49,7 @@ extern "C" {
 #include <string_view>
 
 namespace platf::pyrowave_windows {
+  static_assert(dxgi::pending_pyrowave_sources_t::size == pyrowave::plane_ring_t::size);
   namespace {
     using Microsoft::WRL::ComPtr;
 
@@ -413,7 +414,7 @@ namespace platf::pyrowave_windows {
         if (!wait_for_sync(release_sync_.get(), value)) {
           return encode_failure(frame_number, "pyrowave-fence-wait-stopped-or-failed");
         }
-        if (!conversion_->release_source_after_encode()) return encode_failure(frame_number, "source-release-after-encode");
+        if (!conversion_->release_source_after_encode(*slot)) return encode_failure(frame_number, "source-release-after-encode");
         if (stop_requested_()) return encode_failure(frame_number, "release-stopped-or-failed");
         sync_value_ = value;
         if (!ring_.finish_encode(*slot)) return encode_failure(frame_number, "plane-ring-release");
