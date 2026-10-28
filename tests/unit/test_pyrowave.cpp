@@ -1454,6 +1454,77 @@ TEST(PyrowavePacketizerTest, PreservesFrameHeaderAndTailPaddingOnTheWire) {
   }
 }
 
+TEST(PyrowavePacketizerTest, ParityMatchesOriginalProtectedBytesWithoutClobberingData) {
+  constexpr std::size_t payload_size = 17, group_size = 16;
+  constexpr std::size_t boundary = LI_PYROWAVE_WIRE_HEADER_SIZE + payload_size;
+  auto packetizer = pyrowave::make_transport_packetizer();
+  for (const std::size_t count : { 1u, 16u, 17u, 33u }) {
+    for (const bool metadata : { false, true }) {
+      for (const std::size_t trim : { 0u, 7u }) {
+        for (unsigned round = 0; round < 4; ++round) {
+          SCOPED_TRACE(::testing::Message() << count << ',' << metadata << ',' << trim << ',' << round);
+          const pyrowave::packetization_request_t request {
+            .packet_boundary = boundary, .rtp_timestamp = 1234, .block_aware_fec = true,
+            .metadata = metadata ? optional_metadata(8) : std::vector<std::uint8_t> {},
+            .metadata_flags = static_cast<std::uint16_t>(metadata ? 5 : 0),
+          };
+          auto codec = std::make_shared<std::vector<std::uint8_t>>(
+            count * payload_size - trim - request.metadata.size());
+          for (std::size_t i = 0; i < codec->size(); ++i)
+            (*codec)[i] = round % 2 == 0 ? static_cast<std::uint8_t>(i * 131 + (i >> 3) + round + 29) : 0;
+          const pyrowave::encoded_frame_t frame {
+            .frame_id = 73,
+            .deadline = { std::chrono::steady_clock::now(), std::chrono::milliseconds(100) },
+            .bitstream = { codec },
+          };
+          auto logical = request.metadata;
+          logical.insert(logical.end(), codec->begin(), codec->end());
+          logical.resize(count * payload_size, 0);
+          const auto groups = (count + group_size - 1) / group_size;
+          std::vector<std::vector<std::uint8_t>> expected(groups, std::vector<std::uint8_t>(payload_size));
+          // Byte-only reference from original metadata/codec and explicit zero-tail, not wire DATA.
+          for (std::size_t i = 0; i < logical.size(); ++i)
+            expected[i / (group_size * payload_size)][i % payload_size] ^= logical[i];
+          const auto result = packetizer->packetize(frame, request);
+          ASSERT_EQ(result.failure, pyrowave::failure_e::none);
+          ASSERT_TRUE(pyrowave::validate(result));
+          ASSERT_EQ(result.packets.size(), 1 + count + groups);
+          ASSERT_EQ(result.bitstream.view().size(), result.packets.size() * boundary);
+          for (std::size_t i = 0; i < result.packets.size(); ++i) {
+            SCOPED_TRACE(i);
+            const auto span = result.packets[i];
+            EXPECT_EQ(span.offset, i * boundary);  // Ordered, contiguous, nonoverlapping spans.
+            ASSERT_EQ(span.size, boundary);
+            ASSERT_LE(span.offset + span.size, result.bitstream.view().size());
+            LI_PYROWAVE_PACKET_HEADER header {};
+            const std::uint8_t *payload = nullptr;
+            ASSERT_EQ(LiPyrowaveParsePacket(result.bitstream.view().data() + span.offset, span.size,
+              &header, &payload), LI_PYROWAVE_PACKET_OK);
+            EXPECT_EQ(header.packetKind, i == 0 ? LI_PYROWAVE_PACKET_FRAME_HEADER :
+              (i <= count ? LI_PYROWAVE_PACKET_DATA : LI_PYROWAVE_PACKET_PARITY));
+            ASSERT_EQ(header.payloadLength, payload_size);
+            EXPECT_EQ(header.fecBlockPayloadSize, payload_size);
+            EXPECT_EQ(header.fecScheme, LI_PYROWAVE_FEC_SCHEME_XOR);
+            EXPECT_EQ(header.dataBlockCount, count);
+            EXPECT_EQ(header.parityBlockCount, groups);
+            EXPECT_EQ(header.blockCount, count + groups);
+            if (i == 0) continue;
+            const auto group = i <= count ? (i - 1) / group_size : i - count - 1;
+            const auto members = std::min(group_size, count - group * group_size);
+            EXPECT_EQ(header.blockIndex, i - 1);
+            EXPECT_EQ(header.fecGroupIndex, group);
+            EXPECT_EQ(header.fecDataCount, members);
+            EXPECT_EQ(header.fecParityCount, 1u);
+            EXPECT_EQ(header.fecShardIndex, i <= count ? (i - 1) % group_size : members);
+            for (std::size_t byte = 0; byte < payload_size; ++byte)
+              EXPECT_EQ(payload[byte], i <= count ? logical[(i - 1) * payload_size + byte] : expected[group][byte]) << byte;
+          }
+        }  // Release each result so the same packetizer reuses storage with alternating codec bytes.
+      }
+    }
+  }
+}
+
 TEST(PyrowavePacketizerTest, ClientRecoversMetadataAndCodecAcrossEverySegmentBoundary) {
   constexpr std::size_t payload_size = 32;
   constexpr std::size_t boundary = LI_PYROWAVE_WIRE_HEADER_SIZE + payload_size;

@@ -317,20 +317,10 @@ namespace pyrowave {
         }
 
         if (request.block_aware_fec) {
-          auto &parity = parity_;
-          parity.resize(payload_boundary);
           for (std::size_t group = 0; group < fec_group_count; ++group) {
             const auto group_start = group * LI_PYROWAVE_FEC_DATA_PER_GROUP;
             const auto group_end = std::min(data_block_count,
               group_start + LI_PYROWAVE_FEC_DATA_PER_GROUP);
-            std::copy_n(storage->data() + spans[group_start + 1].offset + header_size,
-              payload_boundary, parity.data());
-            for (std::size_t index = group_start + 1; index < group_end; ++index) {
-              // DATA was already padded and copied into output storage. XOR
-              // those exact wire payloads; no second full-frame source exists.
-              const auto *data = storage->data() + spans[index + 1].offset + header_size;
-              xor_payload(parity.data(), data, payload_boundary);
-            }
             const auto group_data_count = group_end - group_start;
             LI_PYROWAVE_PACKET_HEADER header {
               .version = LI_PYROWAVE_PROTOCOL_VERSION,
@@ -357,12 +347,21 @@ namespace pyrowave {
               .fecParityCount = LI_PYROWAVE_FEC_PARITY_SHARDS,
               .fecShardIndex = static_cast<std::uint8_t>(group_data_count),
               .reserved4 = 0,
-              .payloadLength = static_cast<std::uint16_t>(parity.size()),
+              .payloadLength = static_cast<std::uint16_t>(payload_boundary),
               .reserved5 = 0,
               .reserved6 = 0,
             };
-            if (!build_packet(header, parity.data(), parity.size())) {
+            const auto parity_offset = write_offset;
+            if (!build_packet(header, storage->data() + spans[group_start + 1].offset + header_size,
+                payload_boundary)) {
               return failure(failure_e::packetization_failed);
+            }
+            // The builder copied the first DATA payload into disjoint PARITY
+            // storage. Complete it in place; output storage never reallocates.
+            auto *parity = storage->data() + parity_offset + header_size;
+            for (std::size_t index = group_start + 1; index < group_end; ++index) {
+              const auto *data = storage->data() + spans[index + 1].offset + header_size;
+              xor_payload(parity, data, payload_boundary);
             }
           }
         }
@@ -402,7 +401,6 @@ namespace pyrowave {
         for (auto &slot : pool_->free) slot.reset();
         std::vector<std::uint8_t>().swap(frame_header_payload_);
         std::vector<std::uint8_t>().swap(scratch_);
-        std::vector<std::uint8_t>().swap(parity_);
       }
       catch (...) {
       }
@@ -411,7 +409,7 @@ namespace pyrowave {
   private:
     std::shared_ptr<storage_pool_t> pool_ = std::make_shared<storage_pool_t>();
     // Scratch only; calls on an instance must be serialized. Results own their storage.
-    std::vector<std::uint8_t> frame_header_payload_, scratch_, parity_;
+    std::vector<std::uint8_t> frame_header_payload_, scratch_;
   };
 
   std::unique_ptr<packetizer_t>
