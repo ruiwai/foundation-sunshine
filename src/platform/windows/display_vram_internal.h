@@ -80,6 +80,10 @@ namespace platf::dxgi {
     bool
     release_borrowed_vdd_after_convert(IDXGIKeyedMutex *encoder_mutex);
 
+    // Caller owns the source mutex and has proven GPU completion.
+    bool
+    release_pyrowave_source_after_convert(IDXGIKeyedMutex *encoder_mutex);
+
     bool
     abandon_borrowed_vdd_frame(bool log_busy = true, DWORD timeout_ms = 0);
 
@@ -111,6 +115,6 @@ namespace platf::dxgi {
     ~texture_lock_helper();
 
     bool
-    lock();
+    lock(DWORD timeout_ms = INFINITE);
   };
 }  // namespace platf::dxgi

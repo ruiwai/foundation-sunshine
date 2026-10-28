@@ -194,7 +194,7 @@ namespace platf::dxgi {
       // unavailable cursor metadata. Hold producer then owned key 0, as before.
       if (complete_img(d3d_img.get(), false) != 0) return capture_e::error;
       texture_lock_helper lock_helper(d3d_img->capture_mutex.get());
-      if (!lock_helper.lock()) {
+      if (!lock_helper.lock(1000)) {
         BOOST_LOG(error) << "[vdd] failed to lock owned cursor capture texture"sv;
         return capture_e::error;
       }

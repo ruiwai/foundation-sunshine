@@ -48,6 +48,112 @@ namespace {
     }
   };
 
+  TEST(TextureLock, ExplicitAndDefaultTimeoutsWithIdempotentLockAndScopedRelease) {
+    mutex_state state;
+    state.acquire = {S_OK, S_OK}; state.release = {S_OK, S_OK};
+    platf::dxgi::keyed_mutex_t mutex(new scripted_mutex(state));
+    {
+      platf::dxgi::texture_lock_helper lock(mutex.get());
+      EXPECT_TRUE(lock.lock(1000)); EXPECT_TRUE(lock.lock(1));
+      EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0}));
+      EXPECT_EQ(state.timeouts, (std::vector<DWORD> {1000}));
+      EXPECT_TRUE(state.release_keys.empty());
+    }
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0}));
+    {
+      platf::dxgi::texture_lock_helper lock(mutex.get());
+      EXPECT_TRUE(lock.lock());
+    }
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0, 0}));
+    EXPECT_EQ(state.timeouts, (std::vector<DWORD> {1000, INFINITE}));
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0, 0}));
+    mutex.reset(); EXPECT_TRUE(state.destroyed);
+  }
+
+  TEST(TextureLock, FailedAndNullAcquiresNeverRelease) {
+    for (HRESULT result : {static_cast<HRESULT>(WAIT_TIMEOUT), static_cast<HRESULT>(WAIT_ABANDONED), E_FAIL}) {
+      mutex_state state;
+      state.acquire = {result};
+      platf::dxgi::keyed_mutex_t mutex(new scripted_mutex(state));
+      {
+        platf::dxgi::texture_lock_helper lock(mutex.get());
+        EXPECT_FALSE(lock.lock(1000)); EXPECT_FALSE(lock.locked);
+      }
+      EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0}));
+      EXPECT_EQ(state.timeouts, (std::vector<DWORD> {1000}));
+      EXPECT_TRUE(state.release_keys.empty());
+      mutex.reset(); EXPECT_TRUE(state.destroyed);
+    }
+    platf::dxgi::texture_lock_helper lock(nullptr);
+    EXPECT_FALSE(lock.lock()); EXPECT_FALSE(lock.locked);
+  }
+
+  class OwnedSourceRelease: public testing::Test {
+  protected:
+    mutex_state state;
+    platf::dxgi::keyed_mutex_t mutex {new scripted_mutex(state)};
+    img_d3d_t img;
+  };
+
+  TEST_F(OwnedSourceRelease, CursorSuccessConsumesFreshnessAndRejectsRepeat) {
+    img.pyrowave_cursor_composited = true;
+    img.encoder_release_key = 7;
+    state.acquire = {S_OK, S_OK};
+    ASSERT_EQ(mutex->AcquireSync(0, 16), S_OK);
+    EXPECT_TRUE(img.release_pyrowave_source_after_convert(mutex.get()));
+    EXPECT_FALSE(img.pyrowave_cursor_composited); EXPECT_FALSE(img.pyrowave_ddx_frame);
+    ASSERT_EQ(mutex->AcquireSync(0, 16), S_OK);
+    EXPECT_FALSE(img.release_pyrowave_source_after_convert(mutex.get()));
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {7}));
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0, 0}));
+  }
+
+  TEST_F(OwnedSourceRelease, ReleaseFailurePreservesCursorFreshness) {
+    img.pyrowave_cursor_composited = true;
+    ASSERT_EQ(mutex->AcquireSync(0, 16), S_OK);
+    for (HRESULT result : {E_FAIL, S_FALSE}) {
+      state.release = {result};
+      EXPECT_FALSE(img.release_pyrowave_source_after_convert(mutex.get()));
+      EXPECT_TRUE(img.pyrowave_cursor_composited); EXPECT_FALSE(img.pyrowave_ddx_frame);
+    }
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0, 0}));
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0}));
+  }
+
+  TEST_F(OwnedSourceRelease, NullUnknownMixedAndBorrowedTextureProvenanceNeverRelease) {
+    img.pyrowave_cursor_composited = true;
+    EXPECT_FALSE(img.release_pyrowave_source_after_convert(nullptr));
+    EXPECT_TRUE(img.pyrowave_cursor_composited);
+    ASSERT_EQ(mutex->AcquireSync(0, 16), S_OK);
+    img.pyrowave_cursor_composited = false;
+    EXPECT_FALSE(img.release_pyrowave_source_after_convert(mutex.get()));
+    img.pyrowave_ddx_frame = img.pyrowave_cursor_composited = true;
+    EXPECT_FALSE(img.release_pyrowave_source_after_convert(mutex.get()));
+    EXPECT_TRUE(img.pyrowave_ddx_frame); EXPECT_TRUE(img.pyrowave_cursor_composited);
+    img.pyrowave_cursor_composited = false;
+    img.borrowed_vdd_texture = true;
+    EXPECT_FALSE(img.release_pyrowave_source_after_convert(mutex.get()));
+    EXPECT_TRUE(img.pyrowave_ddx_frame); EXPECT_TRUE(state.release_keys.empty());
+    img.pyrowave_ddx_frame = false; img.pyrowave_cursor_composited = true;
+    EXPECT_FALSE(img.release_pyrowave_source_after_convert(mutex.get()));
+    EXPECT_TRUE(img.pyrowave_cursor_composited); EXPECT_TRUE(state.release_keys.empty());
+  }
+
+  TEST_F(OwnedSourceRelease, DdxRepeatWithIndependentAcquiresRetainsIdentity) {
+    img.pyrowave_ddx_frame = true;
+    img.id = 17; img.frame_desc.source_generation = 23;
+    state.acquire = {S_OK, S_OK}; state.release = {S_OK, S_OK};
+    for (int conversion = 0; conversion < 2; ++conversion) {
+      // API ownership precondition only; no scripted outcome proves GPU completion.
+      ASSERT_EQ(mutex->AcquireSync(0, 16), S_OK);
+      EXPECT_TRUE(img.release_pyrowave_source_after_convert(mutex.get()));
+      EXPECT_TRUE(img.pyrowave_ddx_frame); EXPECT_FALSE(img.pyrowave_cursor_composited);
+      EXPECT_EQ(img.id, 17u); EXPECT_EQ(img.frame_desc.source_generation, 23u);
+    }
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0, 0}));
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0, 0}));
+  }
+
   class SourceLease: public testing::Test {
   protected:
     // State and counter outlive both the image and its owned COM reference.
@@ -243,6 +349,20 @@ namespace {
                     DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB})
       reject(desc.Format, bad);
     EXPECT_TRUE(valid()); EXPECT_TRUE(img.pyrowave_ddx_frame);
+  }
+
+  TEST_F(SourceLease, PyrowaveReleaseRoutesBorrowedAndCleansCounterExactlyOnce) {
+    // Keep an owned COM reference while the image consumes its borrowed reference.
+    img->borrowed_vdd_mutex->AddRef();
+    platf::dxgi::keyed_mutex_t mutex(img->borrowed_vdd_mutex.get());
+    ASSERT_EQ(mutex->AcquireSync(2, 16), S_OK);
+    EXPECT_TRUE(img->release_pyrowave_source_after_convert(mutex.get()));
+    expect_frame(false);
+    EXPECT_TRUE(img->release_borrowed_vdd_after_convert(nullptr));
+    img.reset(); mutex.reset();
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0}));
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {2}));
+    EXPECT_EQ(counter->load(), 0u); EXPECT_TRUE(state.destroyed);
   }
 
   TEST_F(SourceLease, AlreadyAcquiredReleaseIsExactlyOnce) {

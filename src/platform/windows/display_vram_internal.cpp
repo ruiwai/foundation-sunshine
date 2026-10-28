@@ -96,6 +96,24 @@ namespace platf::dxgi {
   }
 
   bool
+  img_d3d_t::release_pyrowave_source_after_convert(IDXGIKeyedMutex *encoder_mutex) {
+    if (borrowed_vdd_frame) return release_borrowed_vdd_after_convert(encoder_mutex);
+    if (!encoder_mutex || borrowed_vdd_texture || pyrowave_ddx_frame == pyrowave_cursor_composited) {
+      BOOST_LOG(error) << "PyroWave source release rejected: missing mutex or invalid owned provenance"sv;
+      return false;
+    }
+    const HRESULT status = encoder_mutex->ReleaseSync(encoder_release_key);
+    if (status != S_OK) {
+      BOOST_LOG(error) << "PyroWave owned source release failed [0x"sv
+                       << util::hex(status).to_string_view() << ']';
+      return false;
+    }
+    // DDX identity survives safe repeat conversion; cursor freshness is single-use.
+    if (!pyrowave_ddx_frame) pyrowave_cursor_composited = false;
+    return true;
+  }
+
+  bool
   img_d3d_t::abandon_borrowed_vdd_frame(bool log_busy, DWORD timeout_ms) {
     if (borrowed_vdd_frame && !borrowed_vdd_mutex) {
       BOOST_LOG(warning) << "[vdd] failed to return borrowed slot "sv << borrowed_vdd_slot << ": missing borrowed mutex"sv;
@@ -167,7 +185,7 @@ namespace platf::dxgi {
   }
 
   bool
-  texture_lock_helper::lock() {
+  texture_lock_helper::lock(DWORD timeout_ms) {
     if (locked) {
       return true;
     }
@@ -176,7 +194,8 @@ namespace platf::dxgi {
       return false;
     }
 
-    const HRESULT status = mutex->AcquireSync(0, INFINITE);
+    // Bounds the pending lock wait only, not time spent inside driver calls.
+    const HRESULT status = mutex->AcquireSync(0, timeout_ms);
     if (status == S_OK) {
       locked = true;
     }

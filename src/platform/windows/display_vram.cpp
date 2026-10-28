@@ -429,12 +429,7 @@ namespace platf::dxgi {
       if (!wait_for_gpu_completion(device_ctx.get(), direct_completion.get(), 1000, stop_requested)) return -1;
       guard.disable();
       // Completion proves source reads finished; return this conversion's source lock.
-      if (img.borrowed_vdd_frame)
-        return img.release_borrowed_vdd_after_convert(ctx.encoder_mutex.get()) ? 0 : -1;
-      // Owned cursor copies and DDX use key 0. DDX identity survives safe repeat conversion.
-      if (ctx.encoder_mutex->ReleaseSync(img.encoder_release_key) != S_OK) return -1;
-      if (!img.pyrowave_ddx_frame) img.pyrowave_cursor_composited = false;
-      return 0;
+      return img.release_pyrowave_source_after_convert(ctx.encoder_mutex.get()) ? 0 : -1;
     }
 
     int
@@ -3536,7 +3531,7 @@ namespace platf::dxgi {
       // This image is shared between capture direct3d device and encoders direct3d devices,
       // we must acquire lock before doing anything to it.
       texture_lock_helper lock_helper(d3d_img->capture_mutex.get());
-      if (!lock_helper.lock()) {
+      if (!lock_helper.lock(1000)) {
         BOOST_LOG(error) << "Failed to lock capture texture";
         return { nullptr, nullptr };
       }
