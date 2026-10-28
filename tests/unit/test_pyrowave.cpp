@@ -6,6 +6,7 @@
 #include "src/pyrowave/capabilities.h"
 #include "src/pyrowave/capture_lifecycle.h"
 #include "src/pyrowave/config.h"
+#include "src/pyrowave/conversion_dispatch.h"
 #include "src/pyrowave/encode_guard.h"
 #include "src/pyrowave/plane_ring.h"
 #include "src/pyrowave/gpu_interop.h"
@@ -48,6 +49,34 @@ extern "C" {
 #include <vector>
 
 namespace {
+
+  TEST(PyrowaveConversionDispatchTest, ParsesOnlyAcceptedGroups) {
+    for (auto text : {"", "8x8", "16x8", "16x16"}) {
+      const auto group = pyrowave::parse_conversion_group(text);
+      ASSERT_TRUE(group);
+      EXPECT_EQ(group->x, std::string_view(text).starts_with("16") ? 16u : 8u);
+      EXPECT_EQ(group->y, std::string_view(text) == "16x16" ? 16u : 8u);
+    }
+    for (auto text : {"8X8", "8x16", "32x8", "0x0", " 8x8", "16x16 ", "garbage"})
+      EXPECT_FALSE(pyrowave::parse_conversion_group(text));
+  }
+
+  TEST(PyrowaveConversionDispatchTest, CountsCoverPositiveEvenBounds) {
+    constexpr auto hd = pyrowave::conversion_dispatch(1920, 1080, {8, 8});
+    static_assert(hd.x == 120 && hd.y == 68);
+    for (auto text : {"8x8", "16x8", "16x16"}) {
+      const auto group = *pyrowave::parse_conversion_group(text);
+      for (auto size : {std::pair{2u, 2u}, {1920u, 1080u}, {34u, 18u}}) {
+        const auto count = pyrowave::conversion_dispatch(size.first, size.second, group);
+        EXPECT_EQ(count.x, size.first == 2 ? 1u : (size.first == 1920 ? (group.x == 8 ? 120u : 60u) : (group.x == 8 ? 3u : 2u)));
+        EXPECT_EQ(count.y, size.second == 2 ? 1u : (size.second == 1080 ? (group.y == 8 ? 68u : 34u) : (group.y == 8 ? 2u : 1u)));
+        EXPECT_GE(count.x * group.x, size.first / 2);
+        EXPECT_GE(count.y * group.y, size.second / 2);
+        EXPECT_LT((count.x - 1) * group.x, size.first / 2);
+        EXPECT_LT((count.y - 1) * group.y, size.second / 2);
+      }
+    }
+  }
 
   using capture_clock = std::chrono::steady_clock;
   using capture_result = pyrowave::capture_wait_result;
@@ -798,6 +827,71 @@ TEST(PyrowaveCapabilityTest, RequiresExactApiVersion) {
   const auto result = pyrowave::evaluate_capabilities(config, device, client);
   EXPECT_EQ(result.availability, pyrowave::availability_e::failed);
   EXPECT_EQ(result.failure, pyrowave::failure_e::api_mismatch);
+}
+
+TEST(PyrowavePacketTest, InsertsHeadersInPlaceWithExactChunkBytes) {
+  for (const auto size : { 1u, 4u, 7u, 8u, 9u, 17u, 63u }) {
+    for (const auto header : { 1u, 3u, 9u }) {
+      for (const std::size_t payload : { std::size_t(1), std::size_t(4), std::size_t(8), std::numeric_limits<std::size_t>::max() }) {
+        for (const auto pattern : { 0u, 0xffu, 37u }) {
+          std::vector<std::uint8_t> bytes(size);
+          for (std::size_t i = 0; i < size; ++i) {
+            bytes[i] = pattern == 37 ? (i * 37 + size * 11) & 0xff : pattern;
+          }
+          std::vector<std::uint8_t> expected;
+          for (std::size_t i = 0; i < size; ++i) {
+            if (i % payload == 0) expected.insert(expected.end(), header, 0);
+            expected.push_back(bytes[i]);
+          }
+          SCOPED_TRACE(::testing::Message() << size << '/' << header << '/' << payload << '/' << pattern);
+          ASSERT_TRUE(pyrowave::insert_packet_headers_in_place(bytes, header, payload));
+          EXPECT_EQ(bytes, expected);
+        }
+      }
+    }
+  }
+}
+
+TEST(PyrowavePacketTest, RejectsInvalidHeaderGeometryWithoutMutation) {
+  for (const auto size : { 0u, 1u, 9u }) {
+    for (const auto header : { std::size_t(0), std::size_t(1), std::numeric_limits<std::size_t>::max() }) {
+      for (const auto payload : { 0u, 1u, 8u }) {
+        if (size && header == 1 && payload) continue;
+        std::vector<std::uint8_t> bytes(size, 0xa5);
+        const auto before = bytes;
+        const auto *data = bytes.data();
+        const auto capacity = bytes.capacity();
+        EXPECT_FALSE(pyrowave::insert_packet_headers_in_place(bytes, header, payload));
+        EXPECT_EQ(bytes, before);
+        EXPECT_EQ(bytes.data(), data);
+        EXPECT_EQ(bytes.capacity(), capacity);
+      }
+    }
+  }
+  std::vector<std::uint8_t> bytes { 1, 2, 3 };
+  const auto before = bytes;
+  EXPECT_FALSE(pyrowave::insert_packet_headers_in_place(bytes, bytes.max_size() / 2, 1));
+  EXPECT_EQ(bytes, before);
+}
+
+TEST(PyrowavePacketTest, OwnedSharedPacketKeepsExpandedBackingAndReusesCapacity) {
+  video::packet_t packet = std::make_unique<video::packet_raw_shared>(
+    std::make_shared<std::vector<std::uint8_t>>(std::initializer_list<std::uint8_t> { 1, 2, 3, 4, 5 }), 9, true);
+  auto *shared = dynamic_cast<video::packet_raw_shared *>(packet.get());
+  ASSERT_NE(shared, nullptr);
+  ASSERT_TRUE(shared->storage.unique());
+  shared->storage->reserve(32);
+  const auto *data = packet->data();
+  const auto encoded_bytes = packet->data_size();
+  ASSERT_TRUE(pyrowave::insert_packet_headers_in_place(*shared->storage, 2, 3));
+  const std::vector<std::uint8_t> expected { 0, 0, 1, 2, 3, 0, 0, 4, 5 };
+  EXPECT_EQ(*shared->storage, expected);
+  EXPECT_EQ(packet->data(), data);
+  EXPECT_EQ(encoded_bytes, 5u);
+  EXPECT_EQ(packet->data_size(), expected.size());
+  std::weak_ptr<std::vector<std::uint8_t>> weak = shared->storage;
+  packet.reset();
+  EXPECT_TRUE(weak.expired());
 }
 
 TEST(PyrowavePacketTest, NegotiatedWireLimitAlsoBoundsOuterRtpGeometry) {

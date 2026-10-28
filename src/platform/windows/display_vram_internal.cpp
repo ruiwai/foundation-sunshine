@@ -31,6 +31,24 @@ namespace platf::dxgi {
   }
 
   bool
+  pending_pyrowave_source_t::hold(std::shared_ptr<img_d3d_t> image, IDXGIKeyedMutex *mutex) {
+    if (!image || !mutex || pending()) return false;
+    mutex->AddRef();
+    mutex_.reset(mutex);
+    image_ = std::move(image);
+    return true;
+  }
+
+  bool
+  pending_pyrowave_source_t::complete() {
+    if (!pending()) return true;
+    if (!image_->release_pyrowave_source_after_convert(mutex_.get())) return false;
+    image_.reset();
+    mutex_.reset();
+    return true;
+  }
+
+  bool
   is_pyrowave_source_valid(const img_d3d_t &img, const D3D11_TEXTURE2D_DESC &desc,
     std::uint64_t adapter_luid, std::uint64_t generation, UINT width, UINT height) noexcept {
     const auto &frame = img.frame_desc;

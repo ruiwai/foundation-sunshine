@@ -19,7 +19,13 @@ float luma(float3 rgb) {
   return dot(rgb, float3(0.2126, 0.7152, 0.0722));
 }
 
-[numthreads(8, 8, 1)]
+#ifndef PYROWAVE_GROUP_X
+#define PYROWAVE_GROUP_X 8
+#endif
+#ifndef PYROWAVE_GROUP_Y
+#define PYROWAVE_GROUP_Y 8
+#endif
+[numthreads(PYROWAVE_GROUP_X, PYROWAVE_GROUP_Y, 1)]
 void main_cs(uint3 id : SV_DispatchThreadID) {
   uint width, height;
   plane_y.GetDimensions(width, height);

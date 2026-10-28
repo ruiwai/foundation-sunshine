@@ -31,6 +31,7 @@ extern "C" {
 #include "pre_encode_filter.h"
 #include "src/config.h"
 #include "src/logging.h"
+#include "src/pyrowave/conversion_dispatch.h"
 #include "src/pyrowave/signal_contract.h"
 #include "src/video.h"
 #include "src/hdr/dynamic_hdr_selection.h"
@@ -250,6 +251,16 @@ namespace platf::dxgi {
   blob_t convert_yuv420_nv12_cs_linear_scaled_hlsl;
   blob_t pyrowave_rgb_to_yuv420_cs_hlsl;
 
+  const pyrowave::conversion_group &compiled_pyrowave_group() {
+    static const auto group = []() {
+      const auto *env = std::getenv("SUNSHINE_PYROWAVE_CONVERSION_GROUP");
+      const auto parsed = pyrowave::parse_conversion_group(env ? env : "");
+      if (!parsed) BOOST_LOG(warning) << "Invalid SUNSHINE_PYROWAVE_CONVERSION_GROUP; falling back to 8x8";
+      return parsed.value_or(pyrowave::conversion_group {});
+    }();
+    return group;
+  }
+
   blob_t
   compile_shader(
     LPCSTR file,
@@ -297,7 +308,7 @@ namespace platf::dxgi {
   }
 
   class d3d_base_encode_device final {
-    query_t direct_completion;
+    pending_pyrowave_source_t pending_source;
 
     // HLG encoding parameters. Keep the layout in sync with the shader cbuffer.
     struct alignas(16) HdrEncodingParams {
@@ -392,20 +403,23 @@ namespace platf::dxgi {
     int
     convert_direct(img_d3d_t &img, ID3D11ComputeShader *shader, ID3D11Buffer *range,
       std::array<ID3D11UnorderedAccessView *, 3> outputs, UINT width, UINT height, const std::function<bool()> &stop_requested) {
+      if (pending_source.pending()) return -1;
       if (stop_requested && stop_requested()) return -1;
+      if (vram_timing_enabled) poll_gpu_timing_samples();
       for (auto it = img_ctx_map.begin(); it != img_ctx_map.end();) {
         if (it->second.img_weak.expired()) it = img_ctx_map.erase(it);
         else ++it;
       }
       auto &ctx = img_ctx_map[img.id];
       if (initialize_image_context(img, ctx)) return -1;
-      if (!direct_completion) direct_completion = make_query(D3D11_QUERY_EVENT);
-      if (!direct_completion) return -1;
+      // Obtain ownership before acquiring the mutex: shared_from_this may throw.
+      auto source_image = std::static_pointer_cast<img_d3d_t>(img.shared_from_this());
       const auto status = ctx.encoder_mutex->AcquireSync(img.encoder_acquire_key, 16);
       if (status != S_OK) {
         BOOST_LOG(error) << "PyroWave direct source acquire failed: " << util::log_hex(status);
         return -1;
       }
+      if (!pending_source.hold(std::move(source_image), ctx.encoder_mutex.get())) return -1;
       auto cleanup = [&]() {
         ID3D11ShaderResourceView *null_srv = nullptr;
         ID3D11UnorderedAccessView *null_uavs[] = { nullptr, nullptr, nullptr };
@@ -424,13 +438,30 @@ namespace platf::dxgi {
       device_ctx->CSSetShaderResources(0, 1, &source);
       device_ctx->CSSetUnorderedAccessViews(0, 3, outputs.data(), nullptr);
       device_ctx->CSSetConstantBuffers(0, 1, &range);
-      device_ctx->Dispatch((width / 2 + 7) / 8, (height / 2 + 7) / 8, 1);
+      const auto groups = pyrowave::conversion_dispatch(width, height, compiled_pyrowave_group());
+      gpu_timing_sample_t sample;
+      gpu_timing_sample_t *timing = nullptr;
+      if (vram_timing_enabled && begin_gpu_timing_sample(sample)) {
+        timing = &sample;
+        timing->cs_used = timing->direct_uav = true;
+        timing->borrowed_vdd = img.borrowed_vdd_texture;
+      }
+      device_ctx->Dispatch(groups.x, groups.y, 1);
+      if (timing) device_ctx->End(timing->after_dispatch.get());
       cleanup();
-      if (!wait_for_gpu_completion(device_ctx.get(), direct_completion.get(), 1000, stop_requested)) return -1;
       guard.disable();
-      // Completion proves source reads finished; return this conversion's source lock.
-      return img.release_pyrowave_source_after_convert(ctx.encoder_mutex.get()) ? 0 : -1;
+      if (timing) {
+        device_ctx->End(timing->before_copy.get());
+        device_ctx->End(timing->after_copy.get()); // Direct UAV path: no copy.
+      }
+      finish_gpu_timing_sample(timing, std::move(sample));
+      // This exact device_ctx is exposed by d3d_context() and QI'd to context4 for
+      // Signal after dispatch. Vulkan waits on that acquire; its release follows
+      // encode/readback, so verified release also proves these source reads ended.
+      return 0;
     }
+
+    bool release_source_after_encode() { return pending_source.complete(); }
 
     int
     convert(platf::img_t &img_base) {
@@ -1618,7 +1649,7 @@ namespace platf::dxgi {
       while (!gpu_timing_pending.empty()) {
         auto &sample = gpu_timing_pending.front();
         D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint = {};
-        HRESULT status = device_ctx->GetData(sample.disjoint.get(), &disjoint, sizeof(disjoint), 0);
+        HRESULT status = device_ctx->GetData(sample.disjoint.get(), &disjoint, sizeof(disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH);
         if (status != S_OK) {
           break;
         }
@@ -1629,11 +1660,11 @@ namespace platf::dxgi {
         UINT64 after_copy = 0;
         UINT64 end = 0;
         const bool ready =
-          device_ctx->GetData(sample.start.get(), &start, sizeof(start), 0) == S_OK &&
-          device_ctx->GetData(sample.after_dispatch.get(), &after_dispatch, sizeof(after_dispatch), 0) == S_OK &&
-          device_ctx->GetData(sample.before_copy.get(), &before_copy, sizeof(before_copy), 0) == S_OK &&
-          device_ctx->GetData(sample.after_copy.get(), &after_copy, sizeof(after_copy), 0) == S_OK &&
-          device_ctx->GetData(sample.end.get(), &end, sizeof(end), 0) == S_OK;
+          device_ctx->GetData(sample.start.get(), &start, sizeof(start), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+          device_ctx->GetData(sample.after_dispatch.get(), &after_dispatch, sizeof(after_dispatch), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+          device_ctx->GetData(sample.before_copy.get(), &before_copy, sizeof(before_copy), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+          device_ctx->GetData(sample.after_copy.get(), &after_copy, sizeof(after_copy), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+          device_ctx->GetData(sample.end.get(), &end, sizeof(end), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
         if (!ready) {
           break;
         }
@@ -3172,6 +3203,7 @@ namespace platf::dxgi {
 
     ID3D11Device *d3d_device() noexcept override { return base_.device.get(); }
     ID3D11DeviceContext *d3d_context() noexcept override { return base_.device_ctx.get(); }
+    bool release_source_after_encode() override { return base_.release_source_after_encode(); }
     const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept override { return slot < planes_.size() ? &planes_[slot] : nullptr; }
     bool select_plane_slot(std::size_t slot) noexcept override {
       if (slot >= planes_.size()) return false;
@@ -4536,11 +4568,16 @@ namespace platf::dxgi {
     }
     convert_yuv420_nv12_cs_linear_scaled_hlsl = compile_compute_shader(
       SUNSHINE_SHADERS_DIR "/convert_yuv420_nv12_cs_linear_scaled.hlsl");
+    const auto &pyrowave_group = compiled_pyrowave_group();
+    const auto group_x = std::to_string(pyrowave_group.x), group_y = std::to_string(pyrowave_group.y);
+    const D3D_SHADER_MACRO pyrowave_defines[] = {
+      {"PYROWAVE_GROUP_X", group_x.c_str()}, {"PYROWAVE_GROUP_Y", group_y.c_str()}, {nullptr, nullptr}};
     pyrowave_rgb_to_yuv420_cs_hlsl = compile_compute_shader(
-      SUNSHINE_SHADERS_DIR "/pyrowave_rgb_to_yuv420_cs.hlsl");
+      SUNSHINE_SHADERS_DIR "/pyrowave_rgb_to_yuv420_cs.hlsl", pyrowave_defines);
     if (!pyrowave_rgb_to_yuv420_cs_hlsl) {
       BOOST_LOG(warning) << "Failed to compile PyroWave direct SDR RGB-to-YUV420 shader"sv;
     }
+    else BOOST_LOG(info) << "PyroWave SDR conversion workgroup: " << group_x << 'x' << group_y;
     if (!convert_yuv420_nv12_cs_linear_scaled_hlsl) {
       BOOST_LOG(warning) << "Failed to compile NV12 linear scaled compute shader, SDR scaled fast path disabled";
     }

@@ -323,6 +323,7 @@ namespace platf::pyrowave_windows {
         }
         const auto slot = ring_.begin_conversion();
         if (!slot || !conversion_->select_plane_slot(*slot)) return -1;
+        // convert_end now measures CPU submission, not GPU completion.
         const auto conversion_result = conversion_->convert(image);
         if (conversion_result != 0) {
           BOOST_LOG(warning) << "PyroWave GPU conversion failed: result=" << conversion_result;
@@ -433,6 +434,7 @@ namespace platf::pyrowave_windows {
         if (!verify_fence_return(release_value)) {
           return encode_failure(frame_number, "vulkan-to-d3d11-fence-probe");
         }
+        if (!conversion_->release_source_after_encode()) return encode_failure(frame_number, "source-release-after-encode");
         if (stop_requested_()) return encode_failure(frame_number, "release-stopped-or-failed");
         sync_value_ = release_value;
         if (!ring_.finish_encode(*slot)) return encode_failure(frame_number, "plane-ring-release");

@@ -32,6 +32,24 @@ and [deferred hardware validation](../../docs/pyrowave-optimizations/hardware-va
   is deferred. No new Windows CI pass, hardware acceptance or measured speedup is claimed.
 - Event-driven idle implementation is excluded; optional UMA/readback and sparse tuning are deferred.
 
+## Experimental SDR conversion dispatch / diagnostics
+
+- Set `SUNSHINE_PYROWAVE_CONVERSION_GROUP=8x8` (default, also empty/unset),
+  `16x8`, or `16x16` in the Sunshine process/service environment, then restart
+  Sunshine. Invalid strings warn and explicitly fall back to `8x8`.
+  The startup log records the compiled variant; dispatch uses that same immutable group.
+- These are experimental workgroup choices, not an automatic optimum. Color math,
+  centered BT.709 chroma, range, boundaries and default quality are unchanged.
+  Measure matched variants on A788 before choosing; no GPU/Windows speedup is claimed.
+- Set `SUNSHINE_VRAM_TIMING=1` in the same process/service environment and restart
+  to enable existing sampled GPU query logs (default off, every 30 frames, max 8 pending).
+  `[vram] GPU timing` reports actual `dispatch_ms` min/avg/max for direct conversion,
+  plus total/unbind timing; this path has no copy. Polling uses DONOTFLUSH, no CPU wait.
+  CPU conversion begin/end traces measure command submission only, NOT GPU completion.
+- WARP variant/reference coverage is correctness-only and pending Windows CI;
+  target GPU and paired-client validation remain deferred. The known native SDR FP16
+  numerical failure remains waived, not passed; no HDR behavior or acceptance changes.
+
 # HISTORICAL integration notes — not current private Windows behavior
 
 本目录保存 Sunshine 侧的 PyroWave 会话、能力和 GPU 互操作边界。Windows 构建默认

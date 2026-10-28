@@ -20,6 +20,10 @@ namespace pyrowave {
   [[nodiscard]] int
   limit_rtp_packet_size(int requested_packet_size, std::uint32_t max_wire_packet_size) noexcept;
 
+  // Insert zeroed transport headers; invalid dimensions or resize failure leave bytes unchanged.
+  [[nodiscard]] bool
+  insert_packet_headers_in_place(std::vector<std::uint8_t> &bytes, std::size_t header_size, std::size_t payload_size) noexcept;
+
   template<class Vector>
   struct basic_bitstream_buffer_t {
     using storage_t = std::shared_ptr<Vector>;

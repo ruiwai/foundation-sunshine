@@ -88,6 +88,87 @@ namespace {
     EXPECT_FALSE(lock.lock()); EXPECT_FALSE(lock.locked);
   }
 
+  TEST(PendingPyrowaveSource, ValidatesHoldsAndCompletesExactlyOnceWithReplayNoOp) {
+    mutex_state state, rejected_state;
+    platf::dxgi::keyed_mutex_t mutex(new scripted_mutex(state)), rejected_mutex(new scripted_mutex(rejected_state));
+    auto img = std::make_shared<img_d3d_t>(), rejected_img = std::make_shared<img_d3d_t>();
+    img->pyrowave_ddx_frame = true; img->encoder_release_key = 7;
+    std::weak_ptr<img_d3d_t> weak = img, rejected_weak = rejected_img;
+    platf::dxgi::pending_pyrowave_source_t lease;
+    EXPECT_FALSE(lease.pending()); EXPECT_TRUE(lease.complete());
+    EXPECT_FALSE(lease.hold(nullptr, mutex.get())); EXPECT_FALSE(lease.hold(img, nullptr));
+    EXPECT_FALSE(lease.pending());
+    // Caller owns the mutex; the lease itself must not acquire or submit GPU work.
+    ASSERT_EQ(mutex->AcquireSync(0, 16), S_OK);
+    ASSERT_TRUE(lease.hold(img, mutex.get())); EXPECT_TRUE(lease.pending());
+    EXPECT_FALSE(lease.hold(rejected_img, rejected_mutex.get()));
+    rejected_img.reset(); rejected_mutex.reset();
+    EXPECT_TRUE(rejected_weak.expired()); EXPECT_TRUE(rejected_state.destroyed);
+    EXPECT_TRUE(rejected_state.acquire_keys.empty()); EXPECT_TRUE(rejected_state.release_keys.empty());
+    img.reset(); mutex.reset();
+    EXPECT_FALSE(weak.expired()); EXPECT_FALSE(state.destroyed);
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0})); EXPECT_TRUE(state.release_keys.empty());
+    EXPECT_TRUE(lease.complete()); EXPECT_FALSE(lease.pending());
+    EXPECT_TRUE(weak.expired()); EXPECT_TRUE(state.destroyed);
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {7}));
+    EXPECT_TRUE(lease.complete()); // Cached-plane replay does not release the old source twice.
+    EXPECT_EQ(state.release_keys.size(), 1u);
+  }
+
+  TEST(PendingPyrowaveSource, FailedCompletionRetainsImageAndMutexUntilSuccessfulRetry) {
+    mutex_state state;
+    state.release = {E_FAIL, S_FALSE, S_OK};
+    platf::dxgi::keyed_mutex_t mutex(new scripted_mutex(state));
+    auto img = std::make_shared<img_d3d_t>(); img->pyrowave_cursor_composited = true;
+    std::weak_ptr<img_d3d_t> weak = img;
+    platf::dxgi::pending_pyrowave_source_t lease;
+    ASSERT_EQ(mutex->AcquireSync(0, 16), S_OK);
+    ASSERT_TRUE(lease.hold(img, mutex.get()));
+    img.reset(); mutex.reset();
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      EXPECT_FALSE(lease.complete()); EXPECT_TRUE(lease.pending());
+      ASSERT_FALSE(weak.expired()); EXPECT_FALSE(state.destroyed);
+      EXPECT_TRUE(weak.lock()->pyrowave_cursor_composited);
+    }
+    EXPECT_TRUE(lease.complete()); EXPECT_FALSE(lease.pending());
+    EXPECT_TRUE(weak.expired()); EXPECT_TRUE(state.destroyed);
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0}));
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0, 0, 0}));
+  }
+
+  TEST(PendingPyrowaveSource, AbortDestructorDropsReferencesWithoutUnlocking) {
+    mutex_state state;
+    platf::dxgi::keyed_mutex_t mutex(new scripted_mutex(state));
+    auto img = std::make_shared<img_d3d_t>(); img->pyrowave_ddx_frame = true;
+    std::weak_ptr<img_d3d_t> weak = img;
+    {
+      platf::dxgi::pending_pyrowave_source_t lease;
+      ASSERT_EQ(mutex->AcquireSync(0, 16), S_OK);
+      ASSERT_TRUE(lease.hold(img, mutex.get()));
+      img.reset(); mutex.reset();
+      EXPECT_FALSE(weak.expired()); EXPECT_FALSE(state.destroyed);
+    }
+    EXPECT_TRUE(weak.expired()); EXPECT_TRUE(state.destroyed);
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> {0})); EXPECT_TRUE(state.release_keys.empty());
+  }
+
+  TEST(PendingPyrowaveSource, BorrowedCompletionReturnsProducerSlotAndClearsAccounting) {
+    mutex_state state;
+    auto img = std::make_shared<img_d3d_t>();
+    auto counter = std::make_shared<std::atomic<UINT64>>(1);
+    img->borrowed_vdd_texture = img->borrowed_vdd_frame = true;
+    img->encoder_acquire_key = 2; img->producer_release_key = 0;
+    img->borrowed_vdd_inflight_counter = counter;
+    img->borrowed_vdd_mutex.reset(new scripted_mutex(state));
+    platf::dxgi::pending_pyrowave_source_t lease;
+    ASSERT_EQ(img->borrowed_vdd_mutex->AcquireSync(2, 16), S_OK);
+    ASSERT_TRUE(lease.hold(img, img->borrowed_vdd_mutex.get()));
+    EXPECT_TRUE(lease.complete()); EXPECT_FALSE(lease.pending());
+    EXPECT_FALSE(img->borrowed_vdd_frame); EXPECT_EQ(counter->load(), 0u);
+    EXPECT_TRUE(state.destroyed); EXPECT_EQ(state.release_keys, (std::vector<UINT64> {0}));
+    EXPECT_TRUE(lease.complete()); EXPECT_EQ(state.release_keys.size(), 1u);
+  }
+
   class OwnedSourceRelease: public testing::Test {
   protected:
     mutex_state state;

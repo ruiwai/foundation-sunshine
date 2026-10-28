@@ -5,6 +5,9 @@
 #include "packet.h"
 
 #include <algorithm>
+#include <cstring>
+#include <new>
+#include <stdexcept>
 #include <utility>
 
 extern "C" {
@@ -12,6 +15,37 @@ extern "C" {
 }
 
 namespace pyrowave {
+
+  bool
+  insert_packet_headers_in_place(std::vector<std::uint8_t> &bytes, std::size_t header_size, std::size_t payload_size) noexcept {
+    const auto size = bytes.size();
+    if (size == 0 || header_size == 0 || payload_size == 0) {
+      return false;
+    }
+    const auto count = (size - 1) / payload_size + 1;
+    if (header_size > (bytes.max_size() - size) / count) {
+      return false;
+    }
+    try {
+      bytes.resize(size + count * header_size);
+    }
+    catch (const std::bad_alloc &) {
+      return false;
+    }
+    catch (const std::length_error &) {
+      return false;
+    }
+    for (auto index = count; index-- > 0;) {
+      const auto offset = index * payload_size;
+      const auto chunk = std::min(payload_size, size - offset);
+      // Equivalent to index * (payload_size + header_size) + header_size,
+      // without overflowing the stride when a single chunk has a huge payload_size.
+      const auto destination = offset + (index + 1) * header_size;
+      std::memmove(bytes.data() + destination, bytes.data() + offset, chunk);
+      std::memset(bytes.data() + destination - header_size, 0, header_size);
+    }
+    return true;
+  }
 
   std::vector<std::uint8_t>
   packetization_result_t::take_bytes() {

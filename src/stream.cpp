@@ -64,6 +64,7 @@ extern "C" {
 #include "clipboard_bridge.h"
 #include "cursor_channel.h"
 #include "platform/common.h"
+#include "pyrowave/packet.h"
 #include "pyrowave/video_admission.h"
 #include "touch_keyboard_session.h"
 #include "text_context/bridge.h"
@@ -3455,7 +3456,18 @@ namespace stream {
       auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;
       auto payload_blocksize = blocksize - sizeof(video_packet_raw_t);
       std::vector<uint8_t> payload_new;
-      if (is_pyrowave) {
+      auto *shared = is_pyrowave ? dynamic_cast<video::packet_raw_shared *>(packet.get()) : nullptr;
+      if (shared && shared->storage && shared->storage.unique() &&
+          payload.data() == reinterpret_cast<const char *>(shared->storage->data()) &&
+          payload.size() == shared->storage->size()) {
+        if (!pyrowave::insert_packet_headers_in_place(*shared->storage, sizeof(video_packet_raw_t), payload_blocksize)) {
+          BOOST_LOG(error) << "[PyroWaveTransport] failed to insert RTP headers for frame " << packet->frame_index();
+          perf::record_pyrowave_failure(session->launch_session_id, perf::pyrowave_failure_stage_e::packetize);
+          continue;
+        }
+        payload = { reinterpret_cast<const char *>(shared->storage->data()), shared->storage->size() };
+      }
+      else if (is_pyrowave) {
         const auto packet_count = (payload.size() + payload_blocksize - 1) / payload_blocksize;
         payload_new.resize(packet_count * sizeof(video_packet_raw_t) + payload.size());
         for (std::size_t index = 0; index < packet_count; ++index) {
@@ -3471,7 +3483,9 @@ namespace stream {
           std::string_view { (char *) &frame_header, sizeof(frame_header) }, payload);
       }
 
-      payload = std::string_view { (char *) payload_new.data(), payload_new.size() };
+      if (!payload_new.empty()) {
+        payload = std::string_view { (char *) payload_new.data(), payload_new.size() };
+      }
 
       const auto frame_data = (payload.size() + blocksize - 1) / blocksize;
       if (!is_pyrowave) {

@@ -34,6 +34,7 @@ namespace platf::dxgi {
     virtual ID3D11DeviceContext *d3d_context() noexcept = 0;
     virtual const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept = 0;
     virtual bool select_plane_slot(std::size_t slot) noexcept = 0;
+    virtual bool release_source_after_encode() = 0;
     // SDR-only: clear invalid HDR statistics and return false.
     virtual bool collect_hdr_luminance_stats() = 0;
   };
@@ -88,6 +89,21 @@ namespace platf::dxgi {
     abandon_borrowed_vdd_frame(bool log_busy = true, DWORD timeout_ms = 0);
 
     ~img_d3d_t() override;
+  };
+
+  // Single-owner lease; holding it never acquires a mutex or submits GPU work.
+  class pending_pyrowave_source_t {
+  public:
+    // Caller already owns mutex. Reject null inputs or an occupied lease.
+    bool hold(std::shared_ptr<img_d3d_t> image, IDXGIKeyedMutex *mutex);
+    // Only after the shared release fence proves conversion + encode completion.
+    // Empty (plane replay) is a no-op; failed releases retain both references.
+    bool complete();
+    bool pending() const { return static_cast<bool>(image_); }
+    // Destruction only drops references: never ReleaseSync on unproven abort.
+  private:
+    std::shared_ptr<img_d3d_t> image_;
+    keyed_mutex_t mutex_;
   };
 
   bool

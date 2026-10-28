@@ -5,12 +5,14 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 #include "src/platform/windows/display_vram_internal.h"
+#include "src/pyrowave/conversion_dispatch.h"
 
 namespace {
   using Microsoft::WRL::ComPtr;
@@ -50,6 +52,7 @@ namespace {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     ComPtr<ID3D11ComputeShader> shader;
+    pyrowave::conversion_group group;
 
     void SetUp() override {
       const D3D_FEATURE_LEVEL required = D3D_FEATURE_LEVEL_11_0;
@@ -57,9 +60,18 @@ namespace {
       ASSERT_HRESULT_SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0,
         &required, 1, D3D11_SDK_VERSION, &device, &actual, &context));
       ASSERT_EQ(actual, required);
+      ASSERT_NO_FATAL_FAILURE(compile({8, 8}));
+    }
+
+    void compile(pyrowave::conversion_group variant) {
+      group = variant;
+      shader.Reset();
+      const auto x = std::to_string(group.x), y = std::to_string(group.y);
+      const D3D_SHADER_MACRO macros[] = {
+        {"PYROWAVE_GROUP_X", x.c_str()}, {"PYROWAVE_GROUP_Y", y.c_str()}, {nullptr, nullptr}};
       ComPtr<ID3DBlob> bytecode, errors;
       const auto path = std::filesystem::path(PYROWAVE_CONVERSION_SHADER_PATH).wstring();
-      const HRESULT hr = D3DCompileFromFile(path.c_str(), nullptr, nullptr, "main_cs", "cs_5_0",
+      const HRESULT hr = D3DCompileFromFile(path.c_str(), macros, nullptr, "main_cs", "cs_5_0",
         D3DCOMPILE_ENABLE_STRICTNESS, 0, &bytecode, &errors);
       ASSERT_HRESULT_SUCCEEDED(hr) << (errors ? static_cast<const char *>(errors->GetBufferPointer()) : "No compiler diagnostic");
       ASSERT_HRESULT_SUCCEEDED(device->CreateComputeShader(bytecode->GetBufferPointer(), bytecode->GetBufferSize(), nullptr, &shader));
@@ -91,13 +103,15 @@ namespace {
       }
     }
 
-    void run(unsigned w, unsigned h, bool full, unsigned kind, bool borrowed = false) {
+    void run(unsigned w, unsigned h, bool full, unsigned kind, bool borrowed = false, bool rgba = false) {
       const auto input = pattern(w, h, kind);
+      auto upload = input; // Keep the independent reference in canonical BGRA order.
+      if (rgba) for (size_t i = 0; i < upload.size(); i += 4) std::swap(upload[i], upload[i + 2]);
       D3D11_TEXTURE2D_DESC desc {};
       desc.Width = w; desc.Height = h; desc.MipLevels = 1; desc.ArraySize = 1;
-      desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; // Bytes B,G,R,A; explicitly not sRGB.
+      desc.Format = rgba ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM; // Never sRGB.
       desc.SampleDesc.Count = 1; desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-      D3D11_SUBRESOURCE_DATA initial {input.data(), w * 4, 0};
+      D3D11_SUBRESOURCE_DATA initial {upload.data(), w * 4, 0};
       ComPtr<ID3D11Texture2D> source;
       ComPtr<ID3D11Device> producer;
       ComPtr<ID3D11DeviceContext> producer_context;
@@ -117,7 +131,7 @@ namespace {
         ASSERT_HRESULT_SUCCEEDED(producer->CreateTexture2D(&desc, nullptr, &producer_source));
         ASSERT_HRESULT_SUCCEEDED(producer_source.As(&producer_mutex));
         ASSERT_EQ(producer_mutex->AcquireSync(0, 1000), S_OK);
-        producer_context->UpdateSubresource(producer_source.Get(), 0, nullptr, input.data(), w * 4, 0);
+        producer_context->UpdateSubresource(producer_source.Get(), 0, nullptr, upload.data(), w * 4, 0);
         ComPtr<IDXGIResource1> resource;
         ASSERT_HRESULT_SUCCEEDED(producer_source.As(&resource));
         HANDLE handle = nullptr;
@@ -166,7 +180,8 @@ namespace {
       context->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
       context->CSSetConstantBuffers(0, 1, constants.GetAddressOf());
       // Extra group in both axes exercises safe oversized dispatch, even for 64x16.
-      context->Dispatch((w / 2 + 7) / 8 + 1, (h / 2 + 7) / 8 + 1, 1);
+      const auto groups = pyrowave::conversion_dispatch(w, h, group);
+      context->Dispatch(groups.x + 1, groups.y + 1, 1);
       context->ClearState(); // Unbind SRV, UAVs, constants and shader before copying.
       if (borrowed) {
         ASSERT_TRUE(platf::dxgi::wait_for_gpu_completion(context.Get(), consumer_completion.Get(), 1000));
@@ -211,11 +226,17 @@ namespace {
 
   TEST_F(PyrowaveConversion, WarpMatchesCenteredBt709Reference) {
     // Software WARP correctness only; UHD hardware and performance are deferred.
-    for (bool full : {false, true}) {
-      for (auto size : {std::array<unsigned, 2>{2, 2}, {18, 10}, {64, 16}}) {
-        for (unsigned kind = 0; kind < 8; ++kind) {
-          SCOPED_TRACE(testing::Message() << "full=" << full << " size=" << size[0] << 'x' << size[1] << " pattern=" << kind);
-          ASSERT_NO_FATAL_FAILURE(run(size[0], size[1], full, kind));
+    for (auto text : {"8x8", "16x8", "16x16"}) {
+      SCOPED_TRACE(text);
+      ASSERT_NO_FATAL_FAILURE(compile(*pyrowave::parse_conversion_group(text)));
+      for (bool rgba : {false, true}) {
+        for (bool full : {false, true}) {
+          for (auto size : {std::array<unsigned, 2>{2, 2}, {18, 10}, {34, 18}, {64, 16}}) {
+            for (unsigned kind = 0; kind < 8; ++kind) {
+              SCOPED_TRACE(testing::Message() << "rgba=" << rgba << " full=" << full << " size=" << size[0] << 'x' << size[1] << " pattern=" << kind);
+              ASSERT_NO_FATAL_FAILURE(run(size[0], size[1], full, kind, false, rgba));
+            }
+          }
         }
       }
     }
