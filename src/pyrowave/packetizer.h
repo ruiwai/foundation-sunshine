@@ -24,8 +24,10 @@ namespace pyrowave {
   };
 
   /**
-   * Create the stateless server transport packetizer used by the experimental
+   * Create the server transport packetizer used by the experimental
    * path. It wraps an already encoded frame and never selects a legacy codec.
+   * Serialize packetize/reset calls; result release may occur on other threads.
+   * Results remain valid after reset or packetizer destruction.
    */
   [[nodiscard]] std::unique_ptr<packetizer_t>
   make_transport_packetizer();

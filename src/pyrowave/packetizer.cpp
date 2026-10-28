@@ -11,12 +11,72 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <limits>
+#include <mutex>
 #include <new>
 
 namespace pyrowave {
   namespace {
     constexpr std::size_t default_packet_boundary = LI_PYROWAVE_MAX_PACKET_SIZE;
+
+    void
+    xor_payload(std::uint8_t *dst, const std::uint8_t *src, std::size_t bytes) {
+      while (bytes >= sizeof(std::uint64_t)) {
+        std::uint64_t left, right;
+        std::memcpy(&left, dst, sizeof(left));
+        std::memcpy(&right, src, sizeof(right));
+        left ^= right;
+        std::memcpy(dst, &left, sizeof(left));
+        dst += sizeof(left);
+        src += sizeof(right);
+        bytes -= sizeof(left);
+      }
+      for (std::size_t byte = 0; byte < bytes; ++byte) {
+        dst[byte] ^= src[byte];
+      }
+    }
+
+    struct storage_pool_t {
+      std::mutex mutex;
+      std::array<std::unique_ptr<std::vector<std::uint8_t>>, 2> free;
+    };
+
+    std::shared_ptr<std::vector<std::uint8_t>>
+    acquire_storage(const std::shared_ptr<storage_pool_t> &pool) {
+      std::unique_ptr<std::vector<std::uint8_t>> buffer;
+      {
+        std::lock_guard lock(pool->mutex);
+        for (auto &slot : pool->free) {
+          if (slot) {
+            buffer = std::move(slot);
+            break;
+          }
+        }
+      }
+      if (!buffer) buffer = std::make_unique<std::vector<std::uint8_t>>();
+      // The control block owns the vector until the last strong release. Weak
+      // observers cannot resurrect it once the deleter starts returning it.
+      return { buffer.release(), [weak = std::weak_ptr<storage_pool_t>(pool)](auto *raw) noexcept {
+        std::unique_ptr<std::vector<std::uint8_t>> owned(raw);
+        try {
+          if (owned->capacity() > 4 * 1024 * 1024) return;
+          if (auto state = weak.lock()) {
+            std::lock_guard lock(state->mutex);
+            for (auto &slot : state->free) {
+              if (!slot) {
+                slot = std::move(owned);
+                return;
+              }
+            }
+          }
+        }
+        catch (...) {
+          // owned destroys the buffer if locking or returning it fails.
+        }
+      } };
+    }
 
     bool
     validate_metadata(const std::vector<std::uint8_t> &metadata) noexcept {
@@ -115,21 +175,25 @@ namespace pyrowave {
 
         const auto fec_scheme = request.block_aware_fec
           ? LI_PYROWAVE_FEC_SCHEME_XOR : LI_PYROWAVE_FEC_SCHEME_NONE;
-        auto storage = std::make_shared<std::vector<std::uint8_t>>();
-        storage->reserve((block_count + 1) * boundary);
+        const auto output_size = request.block_aware_fec
+          ? (block_count + 1) * boundary
+          : boundary + block_count * header_size + protected_size;
+        auto storage = acquire_storage(pool_);
+        storage->resize(output_size);
         std::vector<packet_span_t> spans;
         spans.reserve(block_count + 1);
+        std::size_t write_offset = 0;
 
         const auto build_packet = [&](const LI_PYROWAVE_PACKET_HEADER &header,
                                       const std::uint8_t *payload,
                                       std::size_t payload_size) {
-          const auto packet_offset = storage->size();
-          storage->resize(packet_offset + header.headerLength + payload_size);
+          const auto packet_offset = write_offset;
           std::size_t packet_size = 0;
           const auto result = LiPyrowaveBuildPacket(
             &header, payload, payload_size, storage->data() + packet_offset,
             storage->size() - packet_offset, &packet_size);
-          if (result != LI_PYROWAVE_PACKET_OK || packet_size == 0) {
+          if (result != LI_PYROWAVE_PACKET_OK || packet_size == 0 ||
+              packet_size > storage->size() - packet_offset) {
             BOOST_LOG(warning) << "[PyroWavePacketizer] failed for frame " << frame.frame_id
                                << ": packet=" << header.blockIndex << '/' << header.blockCount
                                << ", kind=" << static_cast<int>(header.packetKind)
@@ -138,6 +202,7 @@ namespace pyrowave {
             return false;
           }
           spans.push_back({ packet_offset, packet_size });
+          write_offset += packet_size;
           return true;
         };
 
@@ -255,17 +320,16 @@ namespace pyrowave {
           auto &parity = parity_;
           parity.resize(payload_boundary);
           for (std::size_t group = 0; group < fec_group_count; ++group) {
-            std::fill(parity.begin(), parity.end(), 0);
             const auto group_start = group * LI_PYROWAVE_FEC_DATA_PER_GROUP;
             const auto group_end = std::min(data_block_count,
               group_start + LI_PYROWAVE_FEC_DATA_PER_GROUP);
-            for (std::size_t index = group_start; index < group_end; ++index) {
+            std::copy_n(storage->data() + spans[group_start + 1].offset + header_size,
+              payload_boundary, parity.data());
+            for (std::size_t index = group_start + 1; index < group_end; ++index) {
               // DATA was already padded and copied into output storage. XOR
               // those exact wire payloads; no second full-frame source exists.
               const auto *data = storage->data() + spans[index + 1].offset + header_size;
-              for (std::size_t byte = 0; byte < payload_boundary; ++byte) {
-                parity[byte] ^= data[byte];
-              }
+              xor_payload(parity.data(), data, payload_boundary);
             }
             const auto group_data_count = group_end - group_start;
             LI_PYROWAVE_PACKET_HEADER header {
@@ -303,6 +367,9 @@ namespace pyrowave {
           }
         }
 
+        if (write_offset != storage->size()) {
+          return failure(failure_e::packetization_failed);
+        }
         return {
           .failure = failure_e::none,
           .bitstream = { std::move(storage) },
@@ -329,9 +396,20 @@ namespace pyrowave {
       }
     }
 
-    void reset() noexcept override {}
+    void reset() noexcept override {
+      try {
+        std::lock_guard lock(pool_->mutex);
+        for (auto &slot : pool_->free) slot.reset();
+        std::vector<std::uint8_t>().swap(frame_header_payload_);
+        std::vector<std::uint8_t>().swap(scratch_);
+        std::vector<std::uint8_t>().swap(parity_);
+      }
+      catch (...) {
+      }
+    }
 
   private:
+    std::shared_ptr<storage_pool_t> pool_ = std::make_shared<storage_pool_t>();
     // Scratch only; calls on an instance must be serialized. Results own their storage.
     std::vector<std::uint8_t> frame_header_payload_, scratch_, parity_;
   };
