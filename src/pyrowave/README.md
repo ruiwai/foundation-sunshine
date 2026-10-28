@@ -4,7 +4,10 @@ All following historical details are context only and do not override this curre
 See [implementation status](../../docs/pyrowave-optimizations/implementation-status.md)
 and [deferred hardware validation](../../docs/pyrowave-optimizations/hardware-validation.md).
 
-- Windows Intel UHD770 only: capture/D3D11/Vulkan must share the adapter LUID;
+- Windows narrow Intel PCI allowlist: vendor `0x8086`, devices `0x4680`/`0xA780`
+  (UHD770) and `0xA788` (user's generic Intel UHD Graphics candidate, not asserted UHD770).
+  Names follow the [HP driver device list](https://ftp.hp.com/pub/softpaq/sp157001-157500/sp157059.html).
+  Hardware remains unverified; capture/D3D11/Vulkan must share the adapter LUID;
   identity is insufficient without actual feature, format, import and synchronization checks.
 - Auto (empty) or `ddx` uses Desktop Duplication on the selected display, with an extra GPU copy
   and no direct VDD driver frame-export dependency. Explicit `vdd` requires driver frame export.

@@ -555,17 +555,16 @@ TEST(PyrowaveApi, RejectsInvalidContextsWithoutAccessingADevice) {
 }
 #endif
 
-TEST(PyrowaveGpuInteropTest, PrivateAdapterRequiresExactIntelUhd770Identity) {
-  EXPECT_TRUE(pyrowave::is_private_adapter(0x8086, L"Intel(R) UHD Graphics 770"));
-  EXPECT_TRUE(pyrowave::is_private_adapter(0x8086, L"Intel UHD Graphics 770"));
-  for (const auto vendor : { 0u, 0x10deu, 0x1002u }) {
-    EXPECT_FALSE(pyrowave::is_private_adapter(vendor, L"Intel(R) UHD Graphics 770"));
-    EXPECT_FALSE(pyrowave::is_private_adapter(vendor, L"Intel UHD Graphics 770"));
+TEST(PyrowaveGpuInteropTest, PrivateAdapterRequiresIntelPciAllowlist) {
+  for (const auto device : { 0x4680u, 0xA780u, 0xA788u }) {
+    EXPECT_TRUE(pyrowave::is_private_adapter(0x8086, device));
+    for (const auto vendor : { 0u, 0x10deu, 0x1002u, 0xFFFFu }) {
+      EXPECT_FALSE(pyrowave::is_private_adapter(vendor, device));
+    }
   }
-  for (const auto name : { L"Intel(R) UHD Graphics 730", L"", L"Intel(R) UHD Graphics",
-                          L"UHD Graphics 770", L"Intel(R) UHD Graphics 770 extra",
-                          L"Intel UHD Graphics 770 extra" }) {
-    EXPECT_FALSE(pyrowave::is_private_adapter(0x8086, name));
+  for (const auto device : { 0u, 0xFFFFu, 0x4682u, 0x4690u, 0x46A1u,
+                            0xA781u, 0xA782u, 0xA787u, 0xA789u }) {
+    EXPECT_FALSE(pyrowave::is_private_adapter(0x8086, device));
   }
 }
 

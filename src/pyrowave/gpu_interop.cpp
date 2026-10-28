@@ -38,9 +38,9 @@ namespace pyrowave {
   }  // namespace
 
   bool
-  is_private_adapter(const std::uint32_t vendor_id, const std::wstring_view description) noexcept {
+  is_private_adapter(const std::uint32_t vendor_id, const std::uint32_t device_id) noexcept {
     return vendor_id == 0x8086 &&
-           (description == L"Intel(R) UHD Graphics 770" || description == L"Intel UHD Graphics 770");
+           (device_id == 0x4680 || device_id == 0xA780 || device_id == 0xA788);
   }
 
   bool

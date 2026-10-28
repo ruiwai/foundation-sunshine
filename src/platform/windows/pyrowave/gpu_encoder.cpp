@@ -136,8 +136,11 @@ namespace platf::pyrowave_windows {
           return;
         }
 
-        if (!pyrowave::is_private_adapter(adapter_desc.VendorId, adapter_desc.Description)) {
-          init_failure("unsupported adapter: Intel UHD770 identity required");
+        if (!pyrowave::is_private_adapter(adapter_desc.VendorId, adapter_desc.DeviceId)) {
+          BOOST_LOG(warning) << "[PyroWaveEncoder][GPU] unsupported adapter: VendorId=0x"
+                             << util::hex(adapter_desc.VendorId).to_string_view()
+                             << ", DeviceId=0x" << util::hex(adapter_desc.DeviceId).to_string_view();
+          init_failure("unsupported adapter: supported Intel PCI adapter required");
           return;
         }
 

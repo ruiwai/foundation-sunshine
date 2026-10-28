@@ -11,7 +11,6 @@
 
 #include <array>
 #include <cstdint>
-#include <string_view>
 
 namespace pyrowave {
 
@@ -19,7 +18,7 @@ namespace pyrowave {
   is_fence_completion_valid(std::uint64_t completed, std::uint64_t required) noexcept;
 
   [[nodiscard]] bool
-  is_private_adapter(std::uint32_t vendor_id, std::wstring_view description) noexcept;
+  is_private_adapter(std::uint32_t vendor_id, std::uint32_t device_id) noexcept;
 
   enum class image_format_e : std::uint8_t {
     bgra8_unorm,
