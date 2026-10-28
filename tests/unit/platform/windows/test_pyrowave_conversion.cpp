@@ -218,6 +218,7 @@ namespace {
 
   TEST_F(PyrowaveConversion, WarpDirectionalFencesInitializeAtomically) {
     platf::pyrowave_windows::shared_fences_t fences;
+    EXPECT_FALSE(fences.wait_release(1, [] { return false; }));
     ASSERT_EQ(fences.initialize(nullptr), E_POINTER);
     ASSERT_EQ(fences.acquire(), nullptr);
     ASSERT_EQ(fences.release(), nullptr);
@@ -261,12 +262,39 @@ namespace {
     // D3D stand-in for the release producer only; this is not Vulkan proof.
     ASSERT_HRESULT_SUCCEEDED(context4->Signal(fences.release(), 2));
     context4->Flush();
+    ASSERT_TRUE(fences.wait_release(2, [] { return false; }));
     ASSERT_NO_FATAL_FAILURE(wait_for_fence(aliases[1].Get(), 2));
     ASSERT_EQ(aliases[0]->GetCompletedValue(), 5u);
     ASSERT_HRESULT_SUCCEEDED(context4->Signal(fences.acquire(), 6));
     context4->Flush();
     ASSERT_NO_FATAL_FAILURE(wait_for_fence(aliases[0].Get(), 6));
     ASSERT_EQ(aliases[1]->GetCompletedValue(), 2u);
+    ASSERT_HRESULT_SUCCEEDED(context4->Signal(fences.release(), 3));
+    context4->Flush();
+    ASSERT_TRUE(fences.wait_release(3, [] { return false; }));
+  }
+
+  TEST_F(PyrowaveConversion, WarpReleaseWaitFailurePermanentlyPoisonsOwner) {
+    // WARP D3D event lifetime only, not Vulkan or target hardware proof.
+    ComPtr<ID3D11Device5> device5;
+    ComPtr<ID3D11DeviceContext4> context4;
+    ASSERT_HRESULT_SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device5)));
+    ASSERT_HRESULT_SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&context4)));
+    platf::pyrowave_windows::shared_fences_t cancelled;
+    ASSERT_HRESULT_SUCCEEDED(cancelled.initialize(device5.Get()));
+    EXPECT_FALSE(cancelled.wait_release(1, [] { return true; }));
+    ASSERT_HRESULT_SUCCEEDED(context4->Signal(cancelled.release(), 1));
+    context4->Flush();
+    ASSERT_NO_FATAL_FAILURE(wait_for_fence(cancelled.release(), 1));
+    EXPECT_FALSE(cancelled.wait_release(1, [] { return false; }));
+    platf::pyrowave_windows::shared_fences_t timed_out;
+    ASSERT_HRESULT_SUCCEEDED(timed_out.initialize(device5.Get()));
+    EXPECT_FALSE(timed_out.wait_release(1, [] { return false; }, std::chrono::milliseconds(10)));
+    // Retain the owner's registered event through late completion and cleanup.
+    ASSERT_HRESULT_SUCCEEDED(context4->Signal(timed_out.release(), 1));
+    context4->Flush();
+    ASSERT_NO_FATAL_FAILURE(wait_for_fence(timed_out.release(), 1));
+    EXPECT_FALSE(timed_out.wait_release(1, [] { return false; }));
   }
 
   TEST_F(PyrowaveConversion, WarpCompletionQueryHonorsStop) {

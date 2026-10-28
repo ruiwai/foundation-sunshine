@@ -407,11 +407,11 @@ namespace platf::pyrowave_windows {
           return encode_failure(frame_number, "pyrowave-gpu-encode", static_cast<int>(encode_result));
         }
         const auto host_encode_return = std::chrono::steady_clock::now();
-        if (!wait_for_sync(release_sync_.get(), value)) {
-          return encode_failure(frame_number, "pyrowave-fence-wait-stopped-or-failed");
-        }
         if (!verify_fence_return(value)) {
           return encode_failure(frame_number, "vulkan-to-d3d11-fence-probe");
+        }
+        if (!wait_for_sync(release_sync_.get(), value)) {
+          return encode_failure(frame_number, "pyrowave-fence-wait-stopped-or-failed");
         }
         if (!conversion_->release_source_after_encode()) return encode_failure(frame_number, "source-release-after-encode");
         if (stop_requested_()) return encode_failure(frame_number, "release-stopped-or-failed");
@@ -540,13 +540,7 @@ namespace platf::pyrowave_windows {
       verify_fence_return(std::uint64_t value) {
         // Check every GPU release before releasing its ring slot or publishing a frame;
         // do not require an additional, unused host-signal path to work.
-        if (pyrowave::bounded_wait([&] {
-          const auto completed = fences_.release()->GetCompletedValue();
-          if (completed == UINT64_MAX) return pyrowave::wait_result::failed;
-          if (completed >= value) return pyrowave::wait_result::complete;
-          Sleep(1);
-          return pyrowave::wait_result::pending;
-        }, stop_requested_, std::chrono::steady_clock::now, std::chrono::seconds(1)) != pyrowave::wait_result::complete) {
+        if (!fences_.wait_release(value, stop_requested_)) {
           init_failure("Vulkan-to-D3D11 fence return stopped-or-failed");
           return false;
         }
