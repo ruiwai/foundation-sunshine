@@ -7,6 +7,7 @@
  */
 #include "cpu_encoder.h"
 
+#include "src/pyrowave/encode_guard.h"
 #include "src/pyrowave/packetizer.h"
 #include "src/streaming/perf_recorder.h"
 #include "src/config.h"
@@ -317,8 +318,8 @@ namespace platf::pyrowave_windows {
     }
   }
 
-  int
-  encode_frame(
+  static int
+  encode_frame_impl(
     int64_t frame_number,
     video::encode_session_t &base_session,
     safe::mail_raw_t::queue_t<video::packet_t> &packets,
@@ -421,5 +422,29 @@ namespace platf::pyrowave_windows {
     }
     perf::record_encoded_frame(base_session.perf_session_id);
     return 0;
+  }
+
+  int
+  encode_frame(
+    int64_t frame_number,
+    video::encode_session_t &base_session,
+    safe::mail_raw_t::queue_t<video::packet_t> &packets,
+    void *channel_data,
+    std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
+    std::optional<platf::frame_pipeline_trace_t> pipeline_trace) {
+    return pyrowave::guarded_encode([&] {
+      return encode_frame_impl(
+        frame_number, base_session, packets, channel_data, frame_timestamp, std::move(pipeline_trace));
+    }, [&](std::exception_ptr exception) {
+      try {
+        std::rethrow_exception(exception);
+      }
+      catch (const std::exception &error) {
+        BOOST_LOG(warning) << "PyroWave CPU frame failed: frame=" << frame_number << ", exception=" << error.what();
+      }
+      catch (...) {
+        BOOST_LOG(warning) << "PyroWave CPU frame failed: frame=" << frame_number << ", unknown exception";
+      }
+    });
   }
 }  // namespace platf::pyrowave_windows

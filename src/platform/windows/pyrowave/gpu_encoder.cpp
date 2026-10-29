@@ -10,6 +10,8 @@
 #include "../display.h"
 #include "../display_vram_internal.h"
 #include "src/config.h"
+#include "src/pyrowave/encode_guard.h"
+#include "src/pyrowave/native_fp16.h"
 #include "src/pyrowave/packetizer.h"
 #include "src/pyrowave/dynamic_hdr.h"
 #include "src/pyrowave/plane_ring.h"
@@ -31,6 +33,7 @@ extern "C" {
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -228,7 +231,15 @@ namespace platf::pyrowave_windows {
           .chroma = PYROWAVE_CHROMA_SUBSAMPLING_420,
         };
         pyrowave_encoder raw_encoder = nullptr;
-        const auto encoder_result = pyrowave_encoder_create(&encoder_info, &raw_encoder);
+        const bool precision_overridden = std::getenv("PYROWAVE_PRECISION") != nullptr;
+        const bool native_fp16 = pyrowave::use_native_fp16(
+          conversion_->colorspace.bit_depth, config.dynamic_hdr_format,
+          pyrowave_device_supports_native_fp16(device_.get()), precision_overridden);
+        BOOST_LOG(info) << "[PyroWaveEncoder][GPU] encoder mode="
+                        << (native_fp16 ? "strict native FP16" : "legacy precision selection");
+        const auto encoder_result = native_fp16 ?
+          pyrowave_encoder_create_native_fp16(&encoder_info, &raw_encoder) :
+          pyrowave_encoder_create(&encoder_info, &raw_encoder);
         if (encoder_result != PYROWAVE_SUCCESS || raw_encoder == nullptr) {
           init_failure("PyroWave GPU encoder creation", static_cast<int>(encoder_result));
           return;
@@ -662,17 +673,19 @@ namespace platf::pyrowave_windows {
     if (session == nullptr) {
       return -1;
     }
-    try {
+    return pyrowave::guarded_encode([&] {
       return session->encode(
         frame_number, packets, channel_data, frame_timestamp, std::move(pipeline_trace));
-    }
-    catch (const std::exception &error) {
-      BOOST_LOG(warning) << "PyroWave GPU frame failed: frame=" << frame_number << ", exception=" << error.what();
-      return -1;
-    }
-    catch (...) {
-      BOOST_LOG(warning) << "PyroWave GPU frame failed: frame=" << frame_number << ", unknown exception";
-      return -1;
-    }
+    }, [&](std::exception_ptr exception) {
+      try {
+        std::rethrow_exception(exception);
+      }
+      catch (const std::exception &error) {
+        BOOST_LOG(warning) << "PyroWave GPU frame failed: frame=" << frame_number << ", exception=" << error.what();
+      }
+      catch (...) {
+        BOOST_LOG(warning) << "PyroWave GPU frame failed: frame=" << frame_number << ", unknown exception";
+      }
+    });
   }
 }  // namespace platf::pyrowave_windows

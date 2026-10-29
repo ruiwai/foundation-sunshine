@@ -158,6 +158,24 @@ common-c 协议、PyroWave 子模块和分裂着色器均由版本控制固定�
 
 ## 验证范围
 
+### 严格 native FP16 的主机选择
+
+GPU 编码器仅在实际输出为 8-bit、没有动态 HDR、当前设备支持原生 FP16，且
+`PYROWAVE_PRECISION` 完全未设置时，自动选择严格 native FP16 创建入口。
+设备检查涵盖已启用的 FP16 运算、无格式 storage 写入和 R16_SFLOAT 格式能力；
+不使用硬件白名单，不改变适配器、捕获、色彩空间或编解码器协商。
+任何显式环境值（包括 `0`、空字符串或非法字符串）均保留原有精度选择行为。
+CPU、HDR/10-bit、动态 metadata 和不支持的设备继续使用 legacy 创建入口；
+这不是新增的捕获回退，前述 SDR CPU staging / HDR 失败策略保持不变。
+严格创建失败走既有初始化失败处理，不重试 FP32。逐帧编码和失败诊断的异常均
+被隔离为本帧 `-1` 结果，不改变 GPU 状态重置策略。
+
+已有原生验证仅覆盖单台 Intel Linux 设备的 34×30 roundtrip，不是性能证据，
+也不代表跨设备或端到端验证；Windows 的 D3D11/Vulkan 严格路径尚未验证。
+`pyrowave_encode_policy_tests` 直接测试主机策略和异常边界；Windows 的
+`pyrowave_native_features_tests` 使用原生 feature/readback helper 测试源，
+只依赖 Vulkan 头文件，不加载 Vulkan runtime。
+
 - `pyrowave_unit_tests`：CPU-only 合同、能力和生命周期校验。
 - 静态链接验证：主程序、单元测试和安装暂存树不依赖额外 PyroWave DLL。
 - 真实 GPU、跨 API 资源导入、HDR、旋转、设备丢失和端到端串流验证不属于普通

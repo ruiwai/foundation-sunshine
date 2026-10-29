@@ -224,6 +224,8 @@ target_link_libraries(pyrowave_unit_tests PRIVATE sunshine::host_headers)
 target_compile_options(pyrowave_unit_tests PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>)
 set_target_properties(pyrowave_unit_tests PROPERTIES CXX_STANDARD 23)
 if (WIN32)
+    # display.h retains native AMF declarations; the staged SDK is not a global include.
+    target_include_directories(pyrowave_unit_tests SYSTEM BEFORE PRIVATE "${AMF_SDK_STAGE}")
     target_sources(pyrowave_unit_tests PRIVATE
             ${CMAKE_SOURCE_DIR}/src/pyrowave/dynamic_hdr.cpp
             ${CMAKE_SOURCE_DIR}/src/video_hdr_metadata.cpp
@@ -242,6 +244,22 @@ if (WIN32)
     set_target_properties(pyrowave_unit_tests PROPERTIES LINK_SEARCH_START_STATIC 1)
 endif ()
 add_test(NAME pyrowave_unit_tests COMMAND pyrowave_unit_tests)
+
+add_executable(pyrowave_encode_policy_tests
+        ${CMAKE_SOURCE_DIR}/tests/unit/test_pyrowave_encode_policy.cpp)
+target_include_directories(pyrowave_encode_policy_tests PRIVATE "${CMAKE_SOURCE_DIR}")
+target_link_libraries(pyrowave_encode_policy_tests PRIVATE gtest_main
+        sunshine_project_options sunshine_coverage)
+set_target_properties(pyrowave_encode_policy_tests PROPERTIES CXX_STANDARD 23)
+add_test(NAME pyrowave_encode_policy_tests COMMAND pyrowave_encode_policy_tests)
+
+if (WIN32)
+    add_executable(pyrowave_native_features_tests
+            ${CMAKE_SOURCE_DIR}/third-party/pyrowave/pyrowave_native_fp16_test.cpp)
+    target_link_libraries(pyrowave_native_features_tests PRIVATE granite-volk-headers)
+    set_target_properties(pyrowave_native_features_tests PROPERTIES CXX_STANDARD 23)
+    add_test(NAME pyrowave_native_features_tests COMMAND pyrowave_native_features_tests)
+endif ()
 
 add_executable(pyrowave_packetizer_probe
         ${CMAKE_SOURCE_DIR}/src/pyrowave/types.cpp
@@ -561,6 +579,7 @@ list(REMOVE_ITEM TEST_SOURCES
         ${CMAKE_SOURCE_DIR}/tests/unit/test_pen_barrel_roll.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/test_perf_frame_rates.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/test_pyrowave.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/test_pyrowave_encode_policy.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/test_remote_usb_host_controller.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/test_rtsp.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/test_sunshinesvc_state.cpp

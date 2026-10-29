@@ -83,5 +83,5 @@
 	branch = main
 [submodule "third-party/pyrowave"]
 	path = third-party/pyrowave
-	url = https://github.com/AlkaidLab/pyrowave.git
-	branch = master
+	url = https://github.com/ruiwai/pyrowave.git
+	branch = port/native-fp16-encoder
