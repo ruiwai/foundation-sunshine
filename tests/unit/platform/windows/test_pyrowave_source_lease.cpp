@@ -9,7 +9,10 @@ namespace {
   using namespace platf::dxgi;
   // Scripted API results only, not a simulation of GPU ordering/device loss.
   struct mutex_state {
+    std::deque<HRESULT> acquires { E_NOTIMPL };
     std::deque<HRESULT> releases { S_OK };
+    std::vector<UINT64> acquire_keys;
+    std::vector<DWORD> acquire_timeouts;
     std::vector<UINT64> release_keys;
     ULONG refs = 1;
     bool destroyed = false;
@@ -41,7 +44,14 @@ namespace {
     HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, UINT *, void *) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetParent(REFIID, void **) override { return E_NOTIMPL; }
     HRESULT STDMETHODCALLTYPE GetDevice(REFIID, void **) override { return E_NOTIMPL; }
-    HRESULT STDMETHODCALLTYPE AcquireSync(UINT64, DWORD) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE AcquireSync(UINT64 key, DWORD timeout_ms) override {
+      state.acquire_keys.push_back(key);
+      state.acquire_timeouts.push_back(timeout_ms);
+      if (state.acquires.empty()) return E_FAIL;
+      const auto result = state.acquires.front();
+      state.acquires.pop_front();
+      return result;
+    }
     HRESULT STDMETHODCALLTYPE ReleaseSync(UINT64 key) override {
       state.release_keys.push_back(key);
       if (state.releases.empty()) return E_FAIL;
@@ -53,6 +63,89 @@ namespace {
 
   static_assert(!std::is_copy_constructible_v<pending_pyrowave_source_t>);
   static_assert(!std::is_move_constructible_v<pending_pyrowave_sources_t>);
+
+  TEST(BorrowedVddReturn, MissingMutexRetainsFrameAndInflightCount) {
+    mutex_state state;
+    state.acquires = { S_OK };
+    auto counter = std::make_shared<std::atomic<UINT64>>(1);
+    img_d3d_t image;
+    image.borrowed_vdd_frame = true;
+    image.borrowed_vdd_inflight_counter = counter;
+    image.encoder_acquire_key = 7;
+    image.producer_release_key = 11;
+    EXPECT_FALSE(image.abandon_borrowed_vdd_frame(false, 19));
+    EXPECT_TRUE(image.borrowed_vdd_frame);
+    EXPECT_EQ(image.borrowed_vdd_inflight_counter, counter);
+    EXPECT_EQ(counter->load(), 1u);
+    EXPECT_EQ(image.encoder_acquire_key, 7u);
+    EXPECT_EQ(image.producer_release_key, 11u);
+    image.borrowed_vdd_mutex.reset(new scripted_mutex(state));
+    EXPECT_TRUE(image.abandon_borrowed_vdd_frame(false, 19));
+    EXPECT_FALSE(image.borrowed_vdd_frame);
+    EXPECT_EQ(counter->load(), 0u);
+    EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> { 7 }));
+    EXPECT_EQ(state.acquire_timeouts, (std::vector<DWORD> { 19 }));
+    EXPECT_EQ(state.release_keys, (std::vector<UINT64> { 11 }));
+  }
+
+  TEST(BorrowedVddReturn, NonSOkReleaseDoesNotConsumeFrame) {
+    for (HRESULT failure : { E_FAIL, S_FALSE, static_cast<HRESULT>(WAIT_TIMEOUT), static_cast<HRESULT>(WAIT_ABANDONED) }) {
+      mutex_state state;
+      state.acquires = { S_OK, S_OK };
+      state.releases = { failure, S_OK };
+      auto counter = std::make_shared<std::atomic<UINT64>>(1);
+      img_d3d_t image;
+      image.borrowed_vdd_frame = true;
+      image.borrowed_vdd_inflight_counter = counter;
+      image.borrowed_vdd_mutex.reset(new scripted_mutex(state));
+      image.producer_release_key = 11;
+      EXPECT_FALSE(image.abandon_borrowed_vdd_frame(false, 23));
+      EXPECT_TRUE(image.borrowed_vdd_frame);
+      EXPECT_EQ(image.borrowed_vdd_inflight_counter, counter);
+      EXPECT_EQ(counter->load(), 1u);
+      EXPECT_NE(image.borrowed_vdd_mutex, nullptr);
+      EXPECT_EQ(image.producer_release_key, 11u);
+      EXPECT_TRUE(image.abandon_borrowed_vdd_frame(false, 23));
+      EXPECT_FALSE(image.borrowed_vdd_frame);
+      EXPECT_EQ(counter->load(), 0u);
+      EXPECT_TRUE(image.abandon_borrowed_vdd_frame());
+      EXPECT_EQ(state.acquire_timeouts, (std::vector<DWORD> { 23, 23 }));
+      EXPECT_EQ(state.release_keys, (std::vector<UINT64> { 11, 11 }));
+    }
+  }
+
+  TEST(CaptureTextureLock, NonSOkAcquireNeverOwnsOrReleases) {
+    for (HRESULT failure : { S_FALSE, static_cast<HRESULT>(WAIT_TIMEOUT), static_cast<HRESULT>(WAIT_ABANDONED) }) {
+      mutex_state state;
+      state.acquires = { failure };
+      keyed_mutex_t mutex(new scripted_mutex(state));
+      {
+        texture_lock_helper lock(mutex.get());
+        EXPECT_FALSE(lock.lock(1000));
+        EXPECT_FALSE(lock.locked);
+      }
+      EXPECT_EQ(state.acquire_keys, (std::vector<UINT64> { 0 }));
+      EXPECT_EQ(state.acquire_timeouts, (std::vector<DWORD> { 1000 }));
+      EXPECT_TRUE(state.release_keys.empty());
+    }
+  }
+
+  TEST(CaptureTextureLock, SOkOwnsAndReleasesOnceWithDefaultOrExplicitTimeout) {
+    for (DWORD timeout : { DWORD { INFINITE }, DWORD { 1000 } }) {
+      mutex_state state;
+      state.acquires = { S_OK };
+      keyed_mutex_t mutex(new scripted_mutex(state));
+      {
+        texture_lock_helper lock(mutex.get());
+        EXPECT_TRUE(timeout == INFINITE ? lock.lock() : lock.lock(timeout));
+        EXPECT_TRUE(lock.lock(1)); // Already owned: no second acquire.
+        EXPECT_TRUE(lock.locked);
+        EXPECT_TRUE(state.release_keys.empty());
+      }
+      EXPECT_EQ(state.acquire_timeouts, (std::vector<DWORD> { timeout }));
+      EXPECT_EQ(state.release_keys, (std::vector<UINT64> { 0 }));
+    }
+  }
 
   TEST(PendingPyrowaveSource, SlotOwnershipDuplicatesAndReplay) {
     mutex_state a, b;

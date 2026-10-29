@@ -8,21 +8,25 @@
 #include <utility>
 
 #include "src/logging.h"
+#include "src/pyrowave/bounded_wait.h"
 
 namespace platf::dxgi {
   using namespace std::literals;
 
   bool
-  wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms) {
-    if (!context || !query) return false;
+  wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms,
+    const std::function<bool()> &stop_requested) {
+    if (!context || !query || pyrowave::cancellation_requested(stop_requested)) return false;
     device_t device;
     context->GetDevice(&device);
     if (!device || device->GetDeviceRemovedReason() != S_OK) return false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     context->Flush();
     for (;;) {
+      if (pyrowave::cancellation_requested(stop_requested)) return false;
       BOOL complete = FALSE;
       const auto status = context->GetData(query, &complete, sizeof(complete), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+      if (pyrowave::cancellation_requested(stop_requested)) return false;
       if (device->GetDeviceRemovedReason() != S_OK) return false;
       if (status == S_OK) return complete == TRUE;
       if (status != S_FALSE || std::chrono::steady_clock::now() >= deadline) return false;
@@ -134,11 +138,16 @@ namespace platf::dxgi {
 
   bool
   img_d3d_t::abandon_borrowed_vdd_frame(bool log_busy, DWORD timeout_ms) {
-    if (borrowed_vdd_frame && borrowed_vdd_mutex) {
+    if (borrowed_vdd_frame && !borrowed_vdd_mutex) {
+      BOOST_LOG(warning) << "[vdd] failed to return borrowed slot "sv
+                         << borrowed_vdd_slot << ": missing borrowed mutex"sv;
+      return false;
+    }
+    if (borrowed_vdd_frame) {
       HRESULT status = borrowed_vdd_mutex->AcquireSync(encoder_acquire_key, timeout_ms);
       if (status == S_OK) {
         status = borrowed_vdd_mutex->ReleaseSync(producer_release_key);
-        if (FAILED(status)) {
+        if (status != S_OK) {
           BOOST_LOG(warning) << "[vdd] failed to return borrowed slot "sv
                              << borrowed_vdd_slot << " [0x"sv
                              << util::hex(status).to_string_view() << ']';
@@ -200,7 +209,7 @@ namespace platf::dxgi {
   }
 
   bool
-  texture_lock_helper::lock() {
+  texture_lock_helper::lock(DWORD timeout_ms) {
     if (locked) {
       return true;
     }
@@ -209,7 +218,7 @@ namespace platf::dxgi {
       return false;
     }
 
-    const HRESULT status = mutex->AcquireSync(0, INFINITE);
+    const HRESULT status = mutex->AcquireSync(0, timeout_ms);
     if (status == S_OK) {
       locked = true;
     }

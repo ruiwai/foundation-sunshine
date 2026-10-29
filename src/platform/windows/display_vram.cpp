@@ -451,7 +451,7 @@ namespace platf::dxgi {
         if (!pending_sources.pending(slot)) continue;
         // Normally empty: only initial/ready frames replaced without encoding wait here.
         if (!pending_query_recorded[slot] ||
-            !wait_for_gpu_completion(device_ctx.get(), pending_queries[slot].get(), 1000) ||
+            !wait_for_gpu_completion(device_ctx.get(), pending_queries[slot].get(), 1000, stop_requested) ||
             !release_source_after_encode(slot)) return false;
       }
       return true;
@@ -1977,6 +1977,7 @@ namespace platf::dxgi {
     // amongst multiple hwdevice_t objects (and therefore multiple ID3D11Devices).
     std::map<uint32_t, encoder_img_ctx_t> img_ctx_map;
     pending_pyrowave_sources_t pending_sources;
+    std::function<bool()> stop_requested;
     std::array<query_t, pending_pyrowave_sources_t::size> pending_queries;
     std::array<bool, pending_pyrowave_sources_t::size> pending_query_recorded {};
 
@@ -3089,6 +3090,10 @@ namespace platf::dxgi {
 
   class d3d_shared_yuv_encode_device_t final: public shared_yuv_encode_device_t {
   public:
+    void set_stop_requested(std::function<bool()> stop_requested) override {
+      base_.stop_requested = std::move(stop_requested);
+    }
+
     ~d3d_shared_yuv_encode_device_t() override {
       for (auto &planes : planes_) {
         for (auto &plane : planes) {
@@ -3841,7 +3846,7 @@ namespace platf::dxgi {
       // This image is shared between capture direct3d device and encoders direct3d devices,
       // we must acquire lock before doing anything to it.
       texture_lock_helper lock_helper(d3d_img->capture_mutex.get());
-      if (!lock_helper.lock()) {
+      if (!lock_helper.lock(1000)) {
         BOOST_LOG(error) << "Failed to lock capture texture";
         return { nullptr, nullptr };
       }

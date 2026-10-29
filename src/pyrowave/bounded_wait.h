@@ -1,8 +1,19 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 
 namespace pyrowave {
+  inline bool cancellation_requested(const std::function<bool()> &stop) noexcept {
+    if (!stop) return false;
+    try {
+      return stop();
+    }
+    catch (...) {
+      return true;
+    }
+  }
+
   enum class wait_result { pending, complete, failed };
 
   // Poll must itself be bounded: production native waits block for 1 ms, not spin.

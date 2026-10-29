@@ -2136,8 +2136,10 @@ namespace video {
           // display_wp is modified in this thread only
           // Wait for the other shared_ptr's of display to be destroyed.
           // New displays will only be created in this thread.
+          pyrowave::pending_deadline display_release_deadline(std::chrono::steady_clock::now(), 5s);
           while (display_wp->use_count() != 1) {
-            if (!capture_ctx_queue->running()) {
+            if (!capture_ctx_queue->running() ||
+                (private_capture && display_release_deadline.expired(std::chrono::steady_clock::now()))) {
               return;
             }
             // Free images that weren't consumed by the encoders. These can reference the display and prevent
@@ -3565,8 +3567,9 @@ namespace video {
     // to restart encoding as soon as possible. For cases where the NVENC driver
     // hang occurs, this thread may probably never exit, but it will allow
     // streaming to continue without requiring a full restart of Sunshine.
-    auto fail_guard = util::fail_guard([&encoder, &session] {
-      if (encoder.flags & ASYNC_TEARDOWN) {
+    auto fail_guard = util::fail_guard([&encoder, &session, &config] {
+      if ((encoder.flags & ASYNC_TEARDOWN) &&
+          config.videoFormat != static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT)) {
         std::thread encoder_teardown_thread { [session = std::move(session)]() mutable {
           BOOST_LOG(info) << "Starting async encoder teardown";
           session.reset();
@@ -4375,7 +4378,9 @@ namespace video {
     float initial_scale_x = 1.0f;
     float initial_scale_y = 1.0f;
 
+    pyrowave::pending_deadline display_ready_deadline(std::chrono::steady_clock::now(), 5s);
     while (!shutdown_event->peek() && images->running()) {
+      if (is_pyrowave && display_ready_deadline.expired(std::chrono::steady_clock::now())) return;
       // Wait for the main capture event when the display is being reinitialized
       if (ref->reinit_event.peek()) {
         BOOST_LOG(debug) << "[Display] Reinit event detected, waiting for display ready...";
@@ -4387,12 +4392,12 @@ namespace video {
       std::shared_ptr<platf::display_t> display;
       {
         auto lg = ref->display_wp.lock();
-        if (ref->display_wp->expired()) {
-          BOOST_LOG(verbose) << "[Display] Display object expired, waiting for reinit...";
-          if (is_pyrowave) std::this_thread::sleep_for(20ms);
-          continue;
-        }
         display = ref->display_wp->lock();
+      }
+      if (!display) {
+        BOOST_LOG(verbose) << "[Display] Display object expired, waiting for reinit...";
+        if (is_pyrowave) std::this_thread::sleep_for(20ms);
+        continue;
       }
 
       // Detect display resolution changes (e.g., rotation causing width/height swap)
@@ -4553,18 +4558,21 @@ namespace video {
                            &pyrowave_fallback_reinit_pending, &pyrowave_terminal_failure_pending,
                            pyrowave_packet_boundary,
                            pyrowave_frame_rate_num, pyrowave_frame_rate_den,
-                           pyrowave_cpu_fallback_allowed]() -> std::unique_ptr<encode_session_t> {
+                           pyrowave_cpu_fallback_allowed, shutdown_event, images]() -> std::unique_ptr<encode_session_t> {
+          if (shutdown_event->peek() || !images->running()) return nullptr;
           pyrowave_session_is_gpu = false;
           if (!pyrowave_gpu_disabled) {
             if (auto base_display = std::dynamic_pointer_cast<platf::dxgi::display_vram_t>(display)) {
               auto gpu_session = platf::pyrowave_windows::make_gpu_encoder(
                 base_display, config, pyrowave_packet_boundary,
                 pyrowave_frame_rate_num,
-                pyrowave_frame_rate_den);
+                pyrowave_frame_rate_den,
+                [shutdown_event, images]() { return shutdown_event->peek() || !images->running(); });
               if (gpu_session) {
                 pyrowave_session_is_gpu = true;
                 return gpu_session;
               }
+              if (shutdown_event->peek() || !images->running()) return nullptr;
 
               if (!pyrowave_cpu_fallback_allowed) {
                 pyrowave_fallback_reinit_pending = false;
@@ -4618,10 +4626,11 @@ namespace video {
           }
           return cpu_session;
         };
-        backend_failure_handler = [&ref, &shutdown_event,
+        backend_failure_handler = [&ref, shutdown_event, images,
                                    &pyrowave_gpu_disabled, &pyrowave_session_is_gpu,
                                    &pyrowave_fallback_reinit_pending, &pyrowave_terminal_failure_pending,
                                    pyrowave_cpu_fallback_allowed]() {
+          if (shutdown_event->peek() || !images->running()) return;
           if (pyrowave_terminal_failure_pending) {
             pyrowave_terminal_failure_pending = false;
             BOOST_LOG(error) << "PyroWave backend initialization failed with no supported fallback; ending video session"sv;
@@ -4706,6 +4715,7 @@ namespace video {
         ref->reinit_event, *ref->encoder_p,
         channel_data, dynamic_param_events,
         std::move(session_factory), std::move(backend_failure_handler));
+      display_ready_deadline.reset(std::chrono::steady_clock::now());
     }
   }
 

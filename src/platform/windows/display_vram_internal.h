@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 
 #include "display.h"
@@ -14,7 +15,8 @@
 namespace platf::dxgi {
   // The event must already have been recorded after the discarded dispatch.
   bool
-  wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms);
+  wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms,
+    const std::function<bool()> &stop_requested = {});
 
   struct shared_yuv_plane_t {
     HANDLE shared_handle = nullptr;
@@ -31,6 +33,7 @@ namespace platf::dxgi {
    */
   class shared_yuv_encode_device_t: public platf::encode_device_t {
   public:
+    virtual void set_stop_requested(std::function<bool()> stop_requested) = 0;
     virtual ID3D11Device *d3d_device() noexcept = 0;
     virtual ID3D11DeviceContext *d3d_context() noexcept = 0;
     virtual const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept = 0;
@@ -163,6 +166,6 @@ namespace platf::dxgi {
     ~texture_lock_helper();
 
     bool
-    lock();
+    lock(DWORD timeout_ms = INFINITE);
   };
 }  // namespace platf::dxgi

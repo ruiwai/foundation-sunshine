@@ -1,13 +1,51 @@
 /** @file test_pyrowave_encode_policy.cpp
  * Strict native FP16 eligibility and per-frame exception isolation.
  */
+#include "src/pyrowave/bounded_wait.h"
 #include "src/pyrowave/encode_guard.h"
+#include "src/pyrowave/capture_lifecycle.h"
 #include "src/pyrowave/native_fp16.h"
 
 #include <gtest/gtest.h>
 
 #include <exception>
 #include <stdexcept>
+
+TEST(PyrowaveCancellation, EmptyAndImmediateStop) {
+  const std::function<bool()> empty;
+  static_assert(noexcept(pyrowave::cancellation_requested(empty)));
+  EXPECT_FALSE(pyrowave::cancellation_requested(empty));
+  EXPECT_TRUE(pyrowave::cancellation_requested([] { return true; }));
+}
+
+TEST(PyrowaveCancellation, LateAndRepeatedExceptionsFailClosed) {
+  for (bool standard_exception : { false, true }) {
+    int calls = 0;
+    const std::function<bool()> stop = [&]() -> bool {
+      if (++calls == 1) return false;
+      if (standard_exception) throw std::runtime_error("late cancellation");
+      throw 17;
+    };
+    EXPECT_FALSE(pyrowave::cancellation_requested(stop));
+    EXPECT_TRUE(pyrowave::cancellation_requested(stop));
+    EXPECT_TRUE(pyrowave::cancellation_requested(stop));
+    EXPECT_EQ(calls, 3);
+  }
+}
+
+TEST(PyrowavePendingDeadline, BeforeExactExpiryAndReset) {
+  using namespace std::chrono_literals;
+  const auto start = std::chrono::steady_clock::time_point {};
+  pyrowave::pending_deadline deadline(start, 5s);
+  EXPECT_FALSE(deadline.expired(start));
+  EXPECT_FALSE(deadline.expired(start + 5s - 1ns));
+  EXPECT_TRUE(deadline.expired(start + 5s));
+  EXPECT_TRUE(deadline.expired(start + 6s));
+  deadline.reset(start + 7s);
+  EXPECT_FALSE(deadline.expired(start + 7s));
+  EXPECT_FALSE(deadline.expired(start + 12s - 1ns));
+  EXPECT_TRUE(deadline.expired(start + 12s));
+}
 
 TEST(PyrowaveEncodeGuard, NormalResultsPassThroughWithoutDiagnostics) {
   bool diagnosed = false;

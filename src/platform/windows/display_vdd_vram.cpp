@@ -235,7 +235,7 @@ namespace platf::dxgi {
       }
 
       texture_lock_helper lock_helper(candidate_d3d->capture_mutex.get());
-      if (!lock_helper.lock()) {
+      if (!lock_helper.lock(1000)) {
         BOOST_LOG(error) << "[vdd] failed to lock capture texture"sv;
         return capture_e::error;
       }

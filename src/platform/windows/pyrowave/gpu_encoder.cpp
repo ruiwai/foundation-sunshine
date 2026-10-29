@@ -10,6 +10,7 @@
 #include "../display.h"
 #include "../display_vram_internal.h"
 #include "src/config.h"
+#include "src/pyrowave/bounded_wait.h"
 #include "src/pyrowave/encode_guard.h"
 #include "src/pyrowave/native_fp16.h"
 #include "src/pyrowave/packetizer.h"
@@ -100,7 +101,8 @@ namespace platf::pyrowave_windows {
         const video::config_t &config,
         std::size_t packet_boundary,
         int frame_rate_num,
-        int frame_rate_den):
+        int frame_rate_den,
+        std::function<bool()> stop_requested):
           packet_boundary_ { packet_boundary },
           width_ { config.width },
           height_ { config.height },
@@ -110,7 +112,12 @@ namespace platf::pyrowave_windows {
           bitrate_kbps_ {
             video::cap_initial_encoder_bitrate(config.bitrate, ::config::video.max_bitrate, 0)
           },
-           conversion_ { dxgi::make_shared_yuv_encode_device(display, config) } {
+          stop_requested_ { [callback = std::move(stop_requested)]() noexcept {
+            return pyrowave::cancellation_requested(callback);
+          } } {
+        if (stop_requested_()) return;
+        conversion_ = dxgi::make_shared_yuv_encode_device(display, config);
+        if (conversion_) conversion_->set_stop_requested(stop_requested_);
         if (packet_boundary == 0 || packet_boundary > LI_PYROWAVE_MAX_PACKET_SIZE ||
             packet_boundary <= LI_PYROWAVE_WIRE_FEC_HEADER_SIZE) {
           init_failure(
@@ -282,6 +289,7 @@ namespace platf::pyrowave_windows {
                         << pyrowave_frame_bits_per_pixel(initial_frame_budget, width_, height_)
                         << ", target_bitrate=" << bitrate_kbps_ << " Kbps"
                         << ", budget_fps=" << frame_rate_num_ << '/' << frame_rate_den_;
+        if (stop_requested_()) return;
         initialized_ = true;
       }
 
@@ -289,7 +297,7 @@ namespace platf::pyrowave_windows {
 
       [[nodiscard]] bool
       ready() const noexcept {
-        return initialized_ && ring_.valid();
+        return initialized_ && ring_.valid() && !stop_requested_();
       }
 
       int
@@ -534,7 +542,7 @@ namespace platf::pyrowave_windows {
           const auto result = pyrowave_sync_object_cpu_wait(sync, value, 1000000ull);
           if (result == PYROWAVE_SUCCESS) return pyrowave::wait_result::complete;
           return result == PYROWAVE_TIMEOUT ? pyrowave::wait_result::pending : pyrowave::wait_result::failed;
-        }, [] { return false; }, std::chrono::steady_clock::now, std::chrono::seconds(1)) == pyrowave::wait_result::complete;
+        }, stop_requested_, std::chrono::steady_clock::now, std::chrono::seconds(1)) == pyrowave::wait_result::complete;
       }
 
       bool
@@ -560,8 +568,8 @@ namespace platf::pyrowave_windows {
       verify_fence_return(std::uint64_t value) {
         // Check every release before recycling a slot or publishing a frame;
         // do not require an additional, unused host-signal path to work.
-        if (!fences_.wait_release(value, [] { return false; }) ||
-            pyrowave_sync_object_cpu_wait(release_sync_.get(), value, 0) != PYROWAVE_SUCCESS) {
+        if (!fences_.wait_release(value, stop_requested_) ||
+            pyrowave_sync_object_cpu_wait(release_sync_.get(), value, 0) != PYROWAVE_SUCCESS || stop_requested_()) {
           init_failure("Vulkan-to-D3D11 fence return");
           return false;
         }
@@ -608,6 +616,7 @@ namespace platf::pyrowave_windows {
       int bitrate_kbps_ = 0;
       bool initialized_ = false;
       bool has_frame_ = false;
+      std::function<bool()> stop_requested_;
       std::unique_ptr<dxgi::shared_yuv_encode_device_t> conversion_;
       Microsoft::WRL::ComPtr<ID3D11Device5> device5_;
       Microsoft::WRL::ComPtr<ID3D11DeviceContext4> context4_;
@@ -636,10 +645,11 @@ namespace platf::pyrowave_windows {
     const video::config_t &config,
     std::size_t packet_boundary,
     int frame_rate_num,
-    int frame_rate_den) {
+    int frame_rate_den,
+    std::function<bool()> stop_requested) {
     try {
       auto session = std::make_unique<gpu_encoder_session_t>(
-        std::move(display), config, packet_boundary, frame_rate_num, frame_rate_den);
+        std::move(display), config, packet_boundary, frame_rate_num, frame_rate_den, std::move(stop_requested));
       if (!session->ready()) {
         BOOST_LOG(warning) << "PyroWave GPU backend could not be initialized after detailed probe";
         return {};

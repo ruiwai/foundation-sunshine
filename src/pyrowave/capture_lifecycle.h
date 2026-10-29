@@ -1,11 +1,26 @@
 #pragma once
 
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <thread>
 #include <utility>
 
 namespace pyrowave {
+  // Only bounds pending host polls, not driver calls or synchronous teardown.
+  class pending_deadline {
+  public:
+    using clock = std::chrono::steady_clock;
+    pending_deadline(clock::time_point start, clock::duration timeout):
+        timeout_(timeout), deadline_(start + timeout) {}
+    void reset(clock::time_point now) { deadline_ = now + timeout_; }
+    bool expired(clock::time_point now) const { return now >= deadline_; }
+
+  private:
+    clock::duration timeout_;
+    clock::time_point deadline_;
+  };
+
   // Stop must be nonthrowing and idempotent; referenced context must outlive this owner.
   // Running/work failures are contained. Driver calls may block indefinitely:
   // cleanup is synchronous, never detached or abandoned at a polling deadline.
