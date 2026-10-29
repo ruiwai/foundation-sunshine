@@ -216,8 +216,9 @@ if (WIN32)
             ${CMAKE_SOURCE_DIR}/src/video_hdr_metadata.cpp
             ${CMAKE_SOURCE_DIR}/src/video_dolby_vision.cpp
             ${CMAKE_SOURCE_DIR}/src/video_hdr_bitstream.cpp
-            ${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/transport.cpp)
-    target_link_libraries(pyrowave_unit_tests PRIVATE Pyrowave::Runtime sunshine::ffmpeg)
+            ${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave/transport.cpp
+            ${CMAKE_SOURCE_DIR}/tests/unit/platform/windows/test_pyrowave_fences.cpp)
+    target_link_libraries(pyrowave_unit_tests PRIVATE Pyrowave::Runtime sunshine::ffmpeg d3d11)
     set_target_properties(pyrowave_unit_tests PROPERTIES LINK_SEARCH_START_STATIC 1)
 endif ()
 add_test(NAME pyrowave_unit_tests COMMAND pyrowave_unit_tests)

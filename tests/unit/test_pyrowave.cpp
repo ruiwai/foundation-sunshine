@@ -3,6 +3,8 @@
  * @brief Pure-data and state-transition tests for the PyroWave foundation.
  */
 #include "src/pyrowave/capabilities.h"
+#include "src/pyrowave/bounded_wait.h"
+#include "src/pyrowave/plane_ring.h"
 #include "src/pyrowave/capture_policy.h"
 #include "src/pyrowave/config.h"
 #include "src/pyrowave/gpu_interop.h"
@@ -1797,3 +1799,243 @@ TEST(PyrowaveSessionTest, FailedSessionCanNegotiateAgain) {
   EXPECT_EQ(session.negotiate(enabled_config(), supported_device(), supported_client()), pyrowave::failure_e::none);
   EXPECT_EQ(session.snapshot().state, pyrowave::session_state_e::prepared);
 }
+
+TEST(PyrowavePlaneRingTest, AlternatesAndRefreshesOnlyAfterRelease) {
+  pyrowave::plane_ring_t ring;
+  EXPECT_TRUE(ring.valid());
+  EXPECT_FALSE(ring.begin_encode());
+  for (std::size_t i = 0; i < 6; ++i) {
+    const auto slot = ring.begin_conversion();
+    ASSERT_EQ(slot, i % 2);
+    EXPECT_FALSE(ring.begin_conversion());
+    EXPECT_FALSE(ring.begin_encode());
+    EXPECT_FALSE(ring.finish_encode(*slot));
+    EXPECT_FALSE(ring.finish_conversion(2));
+    EXPECT_FALSE(ring.finish_conversion(1 - *slot));
+    ASSERT_TRUE(ring.finish_conversion(*slot));
+    EXPECT_FALSE(ring.finish_conversion(*slot));
+    ASSERT_EQ(ring.begin_encode(), slot);
+    EXPECT_FALSE(ring.begin_encode());
+    EXPECT_FALSE(ring.begin_conversion());
+    EXPECT_FALSE(ring.finish_encode(2));
+    EXPECT_FALSE(ring.finish_encode(1 - *slot));
+    ASSERT_TRUE(ring.finish_encode(*slot));  // Caller has completed external fence wait.
+    EXPECT_FALSE(ring.finish_encode(*slot));
+    ASSERT_EQ(ring.begin_encode(), slot);  // Fresh encode of cached planes.
+    ASSERT_TRUE(ring.finish_encode(*slot));
+  }
+}
+
+TEST(PyrowavePlaneRingTest, DropsUnsubmittedReadyAndPrefersNewPlanesOverCache) {
+  pyrowave::plane_ring_t ring;
+  ASSERT_EQ(ring.begin_conversion(), 0u);
+  ASSERT_TRUE(ring.finish_conversion(0));
+  ASSERT_EQ(ring.begin_conversion(), 1u);
+  ASSERT_TRUE(ring.finish_conversion(1));
+  ASSERT_EQ(ring.begin_encode(), 1u);
+  ASSERT_TRUE(ring.finish_encode(1));
+  ASSERT_EQ(ring.begin_conversion(), 0u);
+  ASSERT_TRUE(ring.finish_conversion(0));
+  ASSERT_EQ(ring.begin_encode(), 0u);
+  ASSERT_TRUE(ring.finish_encode(0));
+  ASSERT_EQ(ring.begin_conversion(), 1u);
+  ASSERT_TRUE(ring.finish_conversion(1));
+  ASSERT_EQ(ring.begin_conversion(), 0u);  // Overwrites cached slot and drops ready 1.
+  ASSERT_TRUE(ring.finish_conversion(0));
+  ASSERT_EQ(ring.begin_encode(), 0u);
+}
+
+TEST(PyrowavePlaneRingTest, PoisoningPermanentlyRejectsAllReuse) {
+  for (unsigned phase = 0; phase < 5; ++phase) {
+    pyrowave::plane_ring_t ring;
+    if (phase > 0) { ASSERT_EQ(ring.begin_conversion(), 0u); }
+    if (phase > 1) { ASSERT_TRUE(ring.finish_conversion(0)); }
+    if (phase > 2) { ASSERT_EQ(ring.begin_encode(), 0u); }
+    if (phase > 3) { ASSERT_TRUE(ring.finish_encode(0)); }  // Cached replay is poisoned too.
+    ring.invalidate();
+    ring.invalidate();
+    EXPECT_FALSE(ring.valid());
+    EXPECT_FALSE(ring.begin_conversion());
+    EXPECT_FALSE(ring.begin_encode());
+    EXPECT_FALSE(ring.finish_conversion(0));
+    EXPECT_FALSE(ring.finish_encode(0));
+  }
+}
+
+namespace {
+  class PyrowaveBoundedWaitTest: public ::testing::Test {
+  protected:
+    using result = pyrowave::wait_result;
+    std::chrono::steady_clock::time_point time {};
+    int calls = 0;
+    bool stopped = false;
+    template<class Poll>
+    result run(Poll poll) {
+      return pyrowave::bounded_wait([&] {
+        ++calls;
+        time += std::chrono::milliseconds(1);
+        return poll();
+      }, [&] { return stopped; }, [&] { return time; }, std::chrono::seconds(1));
+    }
+  };
+
+  TEST_F(PyrowaveBoundedWaitTest, ImmediateComplete) {
+    EXPECT_EQ(run([] { return result::complete; }), result::complete);
+    EXPECT_EQ(calls, 1);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, PendingThenComplete) {
+    EXPECT_EQ(run([&] { return calls == 3 ? result::complete : result::pending; }), result::complete);
+    EXPECT_EQ(calls, 3);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, PermanentPendingDeadline) {
+    EXPECT_EQ(run([] { return result::pending; }), result::failed);
+    EXPECT_EQ(time.time_since_epoch(), std::chrono::seconds(1));
+    EXPECT_EQ(calls, 1000);  // No poll after the total pending deadline.
+  }
+  TEST_F(PyrowaveBoundedWaitTest, ImmediateFailure) {
+    EXPECT_EQ(run([] { return result::failed; }), result::failed);
+    EXPECT_EQ(calls, 1);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, StopBeforePoll) {
+    stopped = true;
+    EXPECT_EQ(run([] { return result::complete; }), result::failed);
+    EXPECT_EQ(calls, 0);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, StopAfterPending) {
+    EXPECT_EQ(run([&] { stopped = true; return result::pending; }), result::failed);
+    EXPECT_EQ(calls, 1);
+  }
+  TEST_F(PyrowaveBoundedWaitTest, StopRacesCompletion) {
+    EXPECT_EQ(run([&] { stopped = true; return result::complete; }), result::failed);
+    EXPECT_EQ(calls, 1);
+  }
+
+  class PyrowaveBoundedEventWaitTest: public ::testing::Test {
+  protected:
+    using result = pyrowave::wait_result;
+    using ms = std::chrono::milliseconds;
+    std::chrono::steady_clock::time_point time {};
+    std::chrono::steady_clock::duration arm_time {};
+    int polls = 0, arms = 0;
+    bool stopped = false, arm_ok = true, wait_ok = true;
+    bool cancel_on_wait = false, cancel_on_arm = false;
+    std::vector<ms> waits;
+    template<class Poll>
+    result run(Poll poll, std::chrono::steady_clock::duration timeout = ms(25)) {
+      return pyrowave::bounded_event_wait([&] {
+        ++polls;
+        return poll();
+      }, [&] {
+        ++arms;
+        time += arm_time;
+        stopped = stopped || cancel_on_arm;
+        return arm_ok;
+      }, [&](ms slice) {
+        waits.push_back(slice);
+        time += slice;
+        stopped = stopped || cancel_on_wait;
+        return wait_ok;
+      }, [&] { return stopped; }, [&] { return time; }, timeout);
+    }
+  };
+
+  TEST_F(PyrowaveBoundedEventWaitTest, PrecompleteDoesNotArmOrWait) {
+    EXPECT_EQ(run([] { return result::complete; }), result::complete);
+    EXPECT_EQ(polls, 1);
+    EXPECT_EQ(arms, 0);
+    EXPECT_TRUE(waits.empty());
+    EXPECT_EQ(time.time_since_epoch(), ms(0));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, PrecancelDoesNotPoll) {
+    stopped = true;
+    EXPECT_EQ(run([] { return result::complete; }), result::failed);
+    EXPECT_EQ(polls, 0);
+    EXPECT_EQ(arms, 0);
+    EXPECT_TRUE(waits.empty());
+    EXPECT_EQ(time.time_since_epoch(), ms(0));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, PendingArmsOnceAndCompletesAfterWait) {
+    EXPECT_EQ(run([&] { return waits.empty() ? result::pending : result::complete; }), result::complete);
+    EXPECT_EQ(polls, 2);
+    EXPECT_EQ(arms, 1);
+    EXPECT_EQ(waits, (std::vector<ms>{ms(10)}));
+    EXPECT_EQ(time.time_since_epoch(), ms(10));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, SpuriousWakeCannotCompleteOrRearm) {
+    EXPECT_EQ(run([&] { return waits.size() < 2 ? result::pending : result::complete; }), result::complete);
+    EXPECT_EQ(polls, 3);
+    EXPECT_EQ(arms, 1);
+    EXPECT_EQ(waits, (std::vector<ms>{ms(10), ms(10)}));
+    EXPECT_EQ(time.time_since_epoch(), ms(20));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, ArmFailure) {
+    arm_ok = false;
+    EXPECT_EQ(run([] { return result::pending; }), result::failed);
+    EXPECT_EQ(polls, 1);
+    EXPECT_EQ(arms, 1);
+    EXPECT_TRUE(waits.empty());
+    EXPECT_EQ(time.time_since_epoch(), ms(0));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, WaitFailure) {
+    wait_ok = false;
+    EXPECT_EQ(run([] { return result::pending; }), result::failed);
+    EXPECT_EQ(polls, 1);
+    EXPECT_EQ(arms, 1);
+    EXPECT_EQ(waits, (std::vector<ms>{ms(10)}));
+    EXPECT_EQ(time.time_since_epoch(), ms(10));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, PermanentPendingClipsToDeadline) {
+    EXPECT_EQ(run([] { return result::pending; }), result::failed);
+    EXPECT_EQ(polls, 4);
+    EXPECT_EQ(arms, 1);
+    EXPECT_EQ(waits, (std::vector<ms>{ms(10), ms(10), ms(5)}));
+    EXPECT_EQ(time.time_since_epoch(), ms(25));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, CancellationDuringWait) {
+    cancel_on_wait = true;
+    EXPECT_EQ(run([] { return result::pending; }), result::failed);
+    EXPECT_EQ(polls, 1);
+    EXPECT_EQ(arms, 1);
+    EXPECT_EQ(waits, (std::vector<ms>{ms(10)}));
+    EXPECT_EQ(time.time_since_epoch(), ms(10));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, CancellationRacesCompletion) {
+    EXPECT_EQ(run([&] { stopped = true; return result::complete; }), result::failed);
+    EXPECT_EQ(polls, 1);
+    EXPECT_EQ(arms, 0);
+    EXPECT_TRUE(waits.empty());
+    EXPECT_EQ(time.time_since_epoch(), ms(0));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, FailedPollSentinelDoesNotArm) {
+    EXPECT_EQ(run([] {
+      const auto completed = std::numeric_limits<std::uint64_t>::max();
+      return completed == UINT64_MAX ? result::failed : result::pending;
+    }), result::failed);
+    EXPECT_EQ(polls, 1);
+    EXPECT_EQ(arms, 0);
+    EXPECT_TRUE(waits.empty());
+    EXPECT_EQ(time.time_since_epoch(), ms(0));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, ArmTimeCountsAgainstDeadline) {
+    arm_time = ms(25);
+    EXPECT_EQ(run([] { return result::pending; }), result::failed);
+    EXPECT_EQ(polls, 1);
+    EXPECT_EQ(arms, 1);
+    EXPECT_TRUE(waits.empty());
+    EXPECT_EQ(time.time_since_epoch(), ms(25));
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, CancellationDuringArm) {
+    cancel_on_arm = true;
+    EXPECT_EQ(run([] { return result::pending; }), result::failed);
+    EXPECT_EQ(polls, 1);
+    EXPECT_EQ(arms, 1);
+    EXPECT_TRUE(waits.empty());
+  }
+  TEST_F(PyrowaveBoundedEventWaitTest, FractionalMillisecondsRoundUp) {
+    EXPECT_EQ(run([] { return result::pending; }, std::chrono::microseconds(1500)), result::failed);
+    EXPECT_EQ(polls, 2);
+    EXPECT_EQ(arms, 1);
+    EXPECT_EQ(waits, (std::vector<ms>{ms(2)}));
+    EXPECT_EQ(time.time_since_epoch(), ms(2));
+  }
+}  // namespace
