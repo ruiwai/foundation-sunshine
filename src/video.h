@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -582,6 +583,27 @@ namespace video {
     }
 
     std::vector<uint8_t> frame_data;
+    int64_t index;
+    bool idr;
+  };
+
+  struct packet_raw_shared: packet_raw_t {
+    packet_raw_shared(std::shared_ptr<std::vector<uint8_t>> storage, int64_t frame_index, bool idr):
+        storage { std::move(storage) }, index { frame_index }, idr { idr } {}
+
+    bool
+    is_idr() override { return idr; }
+
+    int64_t
+    frame_index() override { return index; }
+
+    uint8_t *
+    data() override { return storage ? storage->data() : nullptr; }
+
+    size_t
+    data_size() override { return storage ? storage->size() : 0; }
+
+    std::shared_ptr<std::vector<uint8_t>> storage;
     int64_t index;
     bool idr;
   };

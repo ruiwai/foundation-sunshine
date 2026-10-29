@@ -5,12 +5,57 @@
 #include "packet.h"
 
 #include <algorithm>
+#include <cstring>
+#include <new>
+#include <stdexcept>
+#include <utility>
 
 extern "C" {
 #include "third-party/moonlight-common-c/src/PyrowaveProtocol.h"
 }
 
 namespace pyrowave {
+
+  bool
+  insert_packet_headers_in_place(std::vector<std::uint8_t> &bytes, std::size_t header_size, std::size_t payload_size) noexcept {
+    const auto size = bytes.size();
+    if (size == 0 || header_size == 0 || payload_size == 0) {
+      return false;
+    }
+    const auto count = (size - 1) / payload_size + 1;
+    if (header_size > (bytes.max_size() - size) / count) {
+      return false;
+    }
+    try {
+      bytes.resize(size + count * header_size);
+    }
+    catch (const std::bad_alloc &) {
+      return false;
+    }
+    catch (const std::length_error &) {
+      return false;
+    }
+    for (auto index = count; index-- > 0;) {
+      const auto offset = index * payload_size;
+      const auto chunk = std::min(payload_size, size - offset);
+      // Avoid overflowing payload_size + header_size for a single huge chunk.
+      const auto destination = offset + (index + 1) * header_size;
+      std::memmove(bytes.data() + destination, bytes.data() + offset, chunk);
+      std::memset(bytes.data() + destination - header_size, 0, header_size);
+    }
+    return true;
+  }
+
+  std::vector<std::uint8_t>
+  packetization_result_t::take_bytes() {
+    std::vector<std::uint8_t> bytes;
+    if (bitstream.storage) {
+      bytes = bitstream.storage.unique() ? std::move(*bitstream.storage) : *bitstream.storage;
+    }
+    bitstream.storage.reset();
+    packets.clear();
+    return bytes;
+  }
 
   int
   limit_rtp_packet_size(int requested_packet_size, std::uint32_t max_wire_packet_size) noexcept {
@@ -30,7 +75,7 @@ namespace pyrowave {
   bool
   validate(const encoded_frame_t &frame) noexcept {
     return frame.frame_id != 0 && frame.kind == frame_kind_e::intra && !frame.bitstream.empty() &&
-           validate(frame.deadline);
+           validate(frame.deadline) && frame.payload_size <= frame.bitstream.view().size();
   }
 
   bool

@@ -12,6 +12,7 @@
 #include "src/pyrowave/types.h"
 #include "src/pyrowave/runtime.h"
 #include "src/pyrowave/dynamic_hdr.h"
+#include "src/video.h"
 #include "third-party/moonlight-common-c/tests/PyrowaveDynamicHdrFixtures.h"
 #ifdef _WIN32
 #include <vulkan/vulkan.h>
@@ -29,9 +30,11 @@ extern "C" {
 
 #include <algorithm>
 #include <chrono>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -238,13 +241,396 @@ TEST(PyrowavePacketTest, OwnsEncodedBuffer) {
 }
 
 TEST(PyrowavePacketTest, RejectsOutOfBoundsPacket) {
-  auto bytes = std::make_shared<const std::vector<std::uint8_t>>(
+  auto bytes = std::make_shared<std::vector<std::uint8_t>>(
     std::initializer_list<std::uint8_t> { 1, 2, 3 });
   pyrowave::packetization_result_t result;
   result.bitstream.storage = bytes;
   result.packets.push_back({ 2, 2 });
 
   EXPECT_FALSE(pyrowave::validate(result));
+}
+
+TEST(PyrowavePacketTest, TakesUniqueOutputAllocation) {
+  pyrowave::packetization_result_t result;
+  result.bitstream.storage = std::make_shared<std::vector<std::uint8_t>>(3, 0x5a);
+  result.packets.push_back({ 0, 3 });
+  const auto *data = result.bitstream.view().data();
+  const auto bytes = result.take_bytes();
+  EXPECT_EQ(bytes.data(), data);
+  EXPECT_EQ(bytes, (std::vector<std::uint8_t> { 0x5a, 0x5a, 0x5a }));
+  EXPECT_FALSE(result.bitstream.storage);
+  EXPECT_TRUE(result.packets.empty());
+}
+
+TEST(PyrowavePacketTest, CopiesAliasedOutputAndTakesNullOutputSafely) {
+  pyrowave::packetization_result_t result;
+  auto alias = std::make_shared<std::vector<std::uint8_t>>(3, 0x5a);
+  result.bitstream.storage = alias;
+  result.packets.push_back({ 0, 3 });
+  auto bytes = result.take_bytes();
+  EXPECT_NE(bytes.data(), alias->data());
+  EXPECT_EQ(bytes, *alias);
+  bytes[0] = 0;
+  EXPECT_EQ(*alias, (std::vector<std::uint8_t> { 0x5a, 0x5a, 0x5a }));
+  EXPECT_FALSE(result.bitstream.storage);
+  EXPECT_TRUE(result.packets.empty());
+  result.packets.push_back({ 0, 3 });
+  EXPECT_TRUE(result.take_bytes().empty());
+  EXPECT_TRUE(result.packets.empty());
+}
+
+TEST(PyrowavePacketTest, ValidatesPayloadPrefixAndDefaultsToWholeStorage) {
+  pyrowave::encoded_frame_t frame {
+    .frame_id = 1,
+    .bitstream = { std::make_shared<const std::vector<std::uint8_t>>(301, 0x42) },
+  };
+  auto packetizer = pyrowave::make_transport_packetizer();
+  ASSERT_EQ(frame.payload_size, 0u);
+  ASSERT_TRUE(pyrowave::validate(frame));
+  const auto whole = packetizer->packetize(frame, {});
+  frame.payload_size = frame.bitstream.view().size();
+  ASSERT_TRUE(pyrowave::validate(frame));
+  const auto exact = packetizer->packetize(frame, {});
+  ASSERT_EQ(whole.failure, pyrowave::failure_e::none);
+  ASSERT_EQ(exact.failure, pyrowave::failure_e::none);
+  EXPECT_EQ(*whole.bitstream.storage, *exact.bitstream.storage);
+  ++frame.payload_size;
+  EXPECT_FALSE(pyrowave::validate(frame));
+  const auto rejected = packetizer->packetize(frame, {});
+  EXPECT_NE(rejected.failure, pyrowave::failure_e::none);
+  EXPECT_TRUE(rejected.bitstream.empty());
+  EXPECT_TRUE(rejected.packets.empty());
+}
+
+TEST(PyrowavePacketTest, InsertsHeadersInPlaceWithExactChunkBytes) {
+  for (const auto size : { 1u, 4u, 7u, 8u, 9u, 17u, 63u }) {
+    for (const auto header : { 1u, 3u, 9u }) {
+      for (const std::size_t payload : { std::size_t(1), std::size_t(4), std::size_t(8), std::numeric_limits<std::size_t>::max() }) {
+        for (const auto pattern : { 0u, 0xffu, 37u }) {
+          std::vector<std::uint8_t> bytes(size);
+          for (std::size_t i = 0; i < size; ++i) {
+            bytes[i] = pattern == 37 ? (i * 37 + size * 11) & 0xff : pattern;
+          }
+          std::vector<std::uint8_t> expected;
+          for (std::size_t i = 0; i < size; ++i) {
+            if (i % payload == 0) expected.insert(expected.end(), header, 0);
+            expected.push_back(bytes[i]);
+          }
+          SCOPED_TRACE(::testing::Message() << size << '/' << header << '/' << payload << '/' << pattern);
+          ASSERT_TRUE(pyrowave::insert_packet_headers_in_place(bytes, header, payload));
+          EXPECT_EQ(bytes, expected);
+        }
+      }
+    }
+  }
+}
+
+TEST(PyrowavePacketTest, RejectsInvalidHeaderGeometryWithoutMutation) {
+  for (const auto size : { 0u, 1u, 9u }) {
+    for (const auto header : { std::size_t(0), std::size_t(1), std::numeric_limits<std::size_t>::max() }) {
+      for (const auto payload : { 0u, 1u, 8u }) {
+        if (size && header == 1 && payload) continue;
+        std::vector<std::uint8_t> bytes(size, 0xa5);
+        const auto before = bytes;
+        const auto *data = bytes.data();
+        const auto capacity = bytes.capacity();
+        EXPECT_FALSE(pyrowave::insert_packet_headers_in_place(bytes, header, payload));
+        EXPECT_EQ(bytes, before);
+        EXPECT_EQ(bytes.data(), data);
+        EXPECT_EQ(bytes.capacity(), capacity);
+      }
+    }
+  }
+  std::vector<std::uint8_t> bytes { 1, 2, 3 };
+  const auto before = bytes;
+  EXPECT_FALSE(pyrowave::insert_packet_headers_in_place(bytes, bytes.max_size() / 2, 1));
+  EXPECT_EQ(bytes, before);
+}
+
+TEST(PyrowavePacketizerTest, ReusesOnlyScratchAndPreservesEarlierResults) {
+  auto packetizer = pyrowave::make_transport_packetizer();
+  pyrowave::packetization_result_t retained, snapshot;
+  for (unsigned i = 0; i < 24; ++i) {
+    SCOPED_TRACE(i);
+    const pyrowave::encoded_frame_t frame {
+      .frame_id = i + 1,
+      .deadline = { std::chrono::steady_clock::now(), std::chrono::milliseconds(100) },
+      .bitstream = { std::make_shared<const std::vector<std::uint8_t>>(3001 + i * 37, i + 1) },
+    };
+    const bool metadata = (i & 4) != 0;
+    const pyrowave::packetization_request_t request {
+      .packet_boundary = (i & 1) ? LI_PYROWAVE_MAX_PACKET_SIZE : 128u,
+      .rtp_timestamp = 9000 + i * 3000,
+      .block_aware_fec = (i & 2) != 0,
+      .metadata = metadata ? optional_metadata(137 + i) : std::vector<std::uint8_t> {},
+      .metadata_flags = static_cast<std::uint16_t>(metadata ?
+        LI_PYROWAVE_METADATA_FLAG_PROTECTED | LI_PYROWAVE_METADATA_FLAG_OPTIONAL : 0),
+    };
+    if (i == 12) packetizer->reset();
+    auto backing = std::make_shared<std::vector<std::uint8_t>>(*frame.bitstream.storage);
+    backing->resize(backing->size() + 257, 0xa5);
+    auto prefixed = frame;
+    prefixed.bitstream.storage = backing;
+    prefixed.payload_size = frame.bitstream.view().size();
+    const auto reused = packetizer->packetize(prefixed, request);
+    std::fill(backing->begin(), backing->end(), 0xcc);  // Next encode can overwrite input.
+    const auto fresh = pyrowave::make_transport_packetizer()->packetize(frame, request);
+    ASSERT_EQ(reused.failure, pyrowave::failure_e::none);
+    ASSERT_EQ(fresh.failure, pyrowave::failure_e::none);
+    ASSERT_TRUE(pyrowave::validate(reused));
+    ASSERT_TRUE(pyrowave::validate(fresh));
+    EXPECT_NE(reused.bitstream.storage, fresh.bitstream.storage);
+    EXPECT_EQ(*reused.bitstream.storage, *fresh.bitstream.storage);
+    ASSERT_EQ(reused.packets.size(), fresh.packets.size());
+    for (std::size_t j = 0; j < reused.packets.size(); ++j) {
+      EXPECT_EQ(reused.packets[j].offset, fresh.packets[j].offset);
+      EXPECT_EQ(reused.packets[j].size, fresh.packets[j].size);
+    }
+    if (i == 0) { retained = reused; snapshot = fresh; }
+    EXPECT_EQ(*retained.bitstream.storage, *snapshot.bitstream.storage);
+  }
+}
+
+TEST(PyrowavePacketizerTest, ReusesAllocationOnlyAfterLastStrongRelease) {
+  auto packetizer = pyrowave::make_transport_packetizer();
+  pyrowave::encoded_frame_t frame {
+    .frame_id = 7,
+    .bitstream = { std::make_shared<const std::vector<std::uint8_t>>(9000, 0x5a) },
+  };
+  auto first = packetizer->packetize(frame, { .packet_boundary = 1376 });
+  ASSERT_EQ(first.failure, pyrowave::failure_e::none);
+  const auto expected = *first.bitstream.storage;
+  const auto vector_address = reinterpret_cast<std::uintptr_t>(first.bitstream.storage.get());
+  const auto data_address = reinterpret_cast<std::uintptr_t>(first.bitstream.view().data());
+  auto alias = first.bitstream.storage;
+  std::weak_ptr<std::vector<std::uint8_t>> weak = alias;
+  first = {};
+  std::vector<pyrowave::packetization_result_t> inflight;
+  for (unsigned i = 0; i < 5; ++i) {
+    inflight.push_back(packetizer->packetize(frame, { .packet_boundary = 1376 }));
+    ASSERT_EQ(inflight.back().failure, pyrowave::failure_e::none);
+    EXPECT_NE(inflight.back().bitstream.storage, alias);
+    EXPECT_EQ(*alias, expected);
+  }
+  std::thread release([owner = std::move(alias)]() mutable { owner.reset(); });
+  release.join();
+  EXPECT_TRUE(weak.expired());
+  EXPECT_FALSE(weak.lock());
+  frame.payload_size = 113;
+  const pyrowave::packetization_request_t request { .packet_boundary = 1376, .block_aware_fec = true };
+  const auto reused = packetizer->packetize(frame, request);
+  ASSERT_EQ(reused.failure, pyrowave::failure_e::none);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(reused.bitstream.storage.get()), vector_address);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(reused.bitstream.view().data()), data_address);
+  EXPECT_TRUE(weak.expired());  // Reused vector has a new control block.
+  const auto fresh = pyrowave::make_transport_packetizer()->packetize(frame, request);
+  ASSERT_EQ(fresh.failure, pyrowave::failure_e::none);
+  EXPECT_EQ(*reused.bitstream.storage, *fresh.bitstream.storage);
+  packetizer->reset();
+  packetizer.reset();
+  EXPECT_EQ(*reused.bitstream.storage, *fresh.bitstream.storage);
+  for (const auto &result : inflight) EXPECT_EQ(*result.bitstream.storage, expected);
+}
+
+TEST(PyrowavePacketizerTest, ConcurrentLastReleaseWithSerializedPacketizeAndReset) {
+  auto packetizer = pyrowave::make_transport_packetizer();
+  const pyrowave::encoded_frame_t frame {
+    .frame_id = 23,
+    .bitstream = { std::make_shared<const std::vector<std::uint8_t>>(3001, 0x73) },
+  };
+  const pyrowave::packetization_request_t request { .packet_boundary = 97, .block_aware_fec = true };
+  const auto retained = packetizer->packetize(frame, request);
+  ASSERT_EQ(retained.failure, pyrowave::failure_e::none);
+  const auto expected = *retained.bitstream.storage;
+  for (unsigned i = 0; i < 32; ++i) {
+    auto releasing = packetizer->packetize(frame, request);
+    ASSERT_EQ(releasing.failure, pyrowave::failure_e::none);
+    std::weak_ptr<std::vector<std::uint8_t>> weak = releasing.bitstream.storage;
+    std::promise<void> start;
+    std::thread consumer([owner = std::move(releasing.bitstream.storage), ready = start.get_future()]() mutable {
+      ready.wait();
+      owner.reset();
+    });
+    start.set_value();
+    packetizer->reset();  // Producer scratch operations remain serialized.
+    const auto produced = packetizer->packetize(frame, request);
+    if (i == 31) packetizer.reset();
+    consumer.join();
+    ASSERT_EQ(produced.failure, pyrowave::failure_e::none);
+    EXPECT_TRUE(pyrowave::validate(produced));
+    EXPECT_TRUE(weak.expired());
+    EXPECT_FALSE(weak.lock());
+    EXPECT_EQ(*produced.bitstream.storage, expected);
+    EXPECT_EQ(*retained.bitstream.storage, expected);
+    EXPECT_NE(produced.bitstream.storage, retained.bitstream.storage);
+  }
+}
+
+TEST(PyrowavePacketizerTest, SharedQueuePacketOwnsBufferThroughConsumerLifetime) {
+  auto packetizer = pyrowave::make_transport_packetizer();
+  const pyrowave::encoded_frame_t frame {
+    .frame_id = 9,
+    .bitstream = { std::make_shared<const std::vector<std::uint8_t>>(3001, 0x32) },
+  };
+  auto result = packetizer->packetize(frame, { .packet_boundary = 1376 });
+  ASSERT_EQ(result.failure, pyrowave::failure_e::none);
+  const auto expected = *result.bitstream.storage;
+  auto *data = result.bitstream.storage->data();
+  std::weak_ptr<std::vector<std::uint8_t>> weak = result.bitstream.storage;
+  auto mail = std::make_shared<safe::mail_raw_t>();
+  auto queue = mail->queue<video::packet_t>("shared-packet-test");
+  auto packet = std::make_unique<video::packet_raw_shared>(std::move(result.bitstream.storage), 9, true);
+  EXPECT_EQ(packet->data(), data);
+  EXPECT_EQ(packet->data_size(), expected.size());
+  EXPECT_EQ(packet->frame_index(), 9);
+  EXPECT_TRUE(packet->is_idr());
+  queue->raise(std::move(packet));
+  const auto other = packetizer->packetize(frame, { .packet_boundary = 1376 });
+  ASSERT_EQ(other.failure, pyrowave::failure_e::none);
+  EXPECT_NE(other.bitstream.storage->data(), data);
+  packetizer->reset();
+  packetizer.reset();
+  auto consumer = queue->pop(std::chrono::milliseconds(0));
+  ASSERT_TRUE(consumer);
+  EXPECT_FALSE(weak.expired());
+  EXPECT_EQ(consumer->data(), data);
+  EXPECT_EQ(std::vector<std::uint8_t>(consumer->data(), consumer->data() + consumer->data_size()), expected);
+  consumer.reset();
+  EXPECT_TRUE(weak.expired());
+  video::packet_raw_shared empty({}, -1, false);
+  EXPECT_EQ(empty.data(), nullptr);
+  EXPECT_EQ(empty.data_size(), 0u);
+}
+
+TEST(PyrowavePacketizerTest, ParityMatchesOriginalProtectedBytesWithoutClobberingData) {
+  constexpr std::size_t payload_size = 17, group_size = 16;
+  constexpr std::size_t boundary = LI_PYROWAVE_WIRE_HEADER_SIZE + payload_size;
+  auto packetizer = pyrowave::make_transport_packetizer();
+  for (const std::size_t count : { 1u, 16u, 17u, 33u }) {
+    for (const bool metadata : { false, true }) {
+      for (const std::size_t trim : { 0u, 7u }) {
+        for (unsigned round = 0; round < 4; ++round) {
+          SCOPED_TRACE(::testing::Message() << count << ',' << metadata << ',' << trim << ',' << round);
+          const pyrowave::packetization_request_t request {
+            .packet_boundary = boundary, .rtp_timestamp = 1234, .block_aware_fec = true,
+            .metadata = metadata ? optional_metadata(8) : std::vector<std::uint8_t> {},
+            .metadata_flags = static_cast<std::uint16_t>(metadata ? 5 : 0),
+          };
+          auto codec = std::make_shared<std::vector<std::uint8_t>>(
+            count * payload_size - trim - request.metadata.size());
+          for (std::size_t i = 0; i < codec->size(); ++i)
+            (*codec)[i] = round % 2 == 0 ? static_cast<std::uint8_t>(i * 131 + (i >> 3) + round + 29) : 0;
+          const pyrowave::encoded_frame_t frame { .frame_id = 73, .bitstream = { codec } };
+          auto logical = request.metadata;
+          logical.insert(logical.end(), codec->begin(), codec->end());
+          logical.resize(count * payload_size, 0);
+          const auto groups = (count + group_size - 1) / group_size;
+          std::vector<std::vector<std::uint8_t>> expected(groups, std::vector<std::uint8_t>(payload_size));
+          // Byte-only reference from original metadata/codec and explicit zero-tail, not wire DATA.
+          for (std::size_t i = 0; i < logical.size(); ++i)
+            expected[i / (group_size * payload_size)][i % payload_size] ^= logical[i];
+          const auto result = packetizer->packetize(frame, request);
+          ASSERT_EQ(result.failure, pyrowave::failure_e::none);
+          ASSERT_TRUE(pyrowave::validate(result));
+          ASSERT_EQ(result.packets.size(), 1 + count + groups);
+          ASSERT_EQ(result.bitstream.view().size(), result.packets.size() * boundary);
+          for (std::size_t i = 0; i < result.packets.size(); ++i) {
+            const auto span = result.packets[i];
+            EXPECT_EQ(span.offset, i * boundary);
+            ASSERT_EQ(span.size, boundary);
+            LI_PYROWAVE_PACKET_HEADER header {};
+            const std::uint8_t *payload = nullptr;
+            ASSERT_EQ(LiPyrowaveParsePacket(result.bitstream.view().data() + span.offset, span.size,
+              &header, &payload), LI_PYROWAVE_PACKET_OK);
+            EXPECT_EQ(header.packetKind, i == 0 ? LI_PYROWAVE_PACKET_FRAME_HEADER :
+              (i <= count ? LI_PYROWAVE_PACKET_DATA : LI_PYROWAVE_PACKET_PARITY));
+            ASSERT_EQ(header.payloadLength, payload_size);
+            EXPECT_EQ(header.fecBlockPayloadSize, payload_size);
+            EXPECT_EQ(header.fecScheme, LI_PYROWAVE_FEC_SCHEME_XOR);
+            EXPECT_EQ(header.dataBlockCount, count);
+            EXPECT_EQ(header.parityBlockCount, groups);
+            EXPECT_EQ(header.blockCount, count + groups);
+            if (i == 0) continue;
+            const auto group = i <= count ? (i - 1) / group_size : i - count - 1;
+            const auto members = std::min(group_size, count - group * group_size);
+            EXPECT_EQ(header.blockIndex, i - 1);
+            EXPECT_EQ(header.fecGroupIndex, group);
+            EXPECT_EQ(header.fecDataCount, members);
+            EXPECT_EQ(header.fecParityCount, 1u);
+            EXPECT_EQ(header.fecShardIndex, i <= count ? (i - 1) % group_size : members);
+            for (std::size_t byte = 0; byte < payload_size; ++byte)
+              EXPECT_EQ(payload[byte], i <= count ? logical[(i - 1) * payload_size + byte] : expected[group][byte]) << byte;
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(PyrowavePacketizerTest, RecoversFecXorWordAndByteTailsAcrossGroups) {
+  auto packetizer = pyrowave::make_transport_packetizer();
+  for (const auto payload_size : { 1u, 7u, 8u, 9u, 15u, 17u, 31u, 33u }) {
+    for (const auto tail : { 1u, (payload_size + 1) / 2, payload_size }) {
+      SCOPED_TRACE(::testing::Message() << "payload=" << payload_size << ", tail=" << tail);
+      auto source = std::make_shared<std::vector<std::uint8_t>>(
+        payload_size * (LI_PYROWAVE_FEC_DATA_PER_GROUP * 2 + 2) + tail);
+      for (std::size_t i = 0; i < source->size(); ++i) (*source)[i] = static_cast<std::uint8_t>(i * 37 + i / 7 + 11);
+      const pyrowave::encoded_frame_t frame { .frame_id = 29, .bitstream = { source } };
+      const auto boundary = LI_PYROWAVE_WIRE_HEADER_SIZE + payload_size;
+      const auto result = packetizer->packetize(frame, {
+        .packet_boundary = boundary, .block_aware_fec = true,
+      });
+      ASSERT_EQ(result.failure, pyrowave::failure_e::none);
+      ASSERT_TRUE(pyrowave::validate(result));
+      ASSERT_EQ(result.packets.size(), LI_PYROWAVE_FEC_DATA_PER_GROUP * 2 + 7u);
+      LI_PYROWAVE_REASSEMBLY_STATE state;
+      LiPyrowaveReassemblyInitialize(&state, 16 * 1024 * 1024);
+      const auto cleanup = std::unique_ptr<LI_PYROWAVE_REASSEMBLY_STATE,
+        decltype(&LiPyrowaveReassemblyDestroy)>(&state, LiPyrowaveReassemblyDestroy);
+      unsigned dropped = 0;
+      for (const auto &span : result.packets) {
+        ASSERT_EQ(span.size, boundary);
+        const auto *wire = result.bitstream.view().data() + span.offset;
+        LI_PYROWAVE_PACKET_HEADER header {};
+        const std::uint8_t *payload = nullptr;
+        ASSERT_EQ(LiPyrowaveParsePacket(wire, span.size, &header, &payload), LI_PYROWAVE_PACKET_OK);
+        ASSERT_EQ(header.fecBlockPayloadSize, payload_size);
+        if (header.packetKind == LI_PYROWAVE_PACKET_DATA && header.fecShardIndex == 0) {
+          ++dropped;
+          continue;
+        }
+        const auto status = LiPyrowaveReassemblyPushPacket(&state, wire, span.size, 5000, 100000);
+        ASSERT_TRUE(status == LI_PYROWAVE_REASSEMBLY_ACCEPTED ||
+                    status == LI_PYROWAVE_REASSEMBLY_COMPLETE || status == LI_PYROWAVE_REASSEMBLY_DUPLICATE);
+      }
+      EXPECT_EQ(dropped, 3u);
+      ASSERT_TRUE(LiPyrowaveReassemblyIsComplete(&state));
+      std::vector<std::uint8_t> output(source->size());
+      std::size_t written = 0;
+      ASSERT_EQ(LiPyrowaveReassemblyCopyFrame(&state, output.data(), output.size(), &written, nullptr),
+        LI_PYROWAVE_REASSEMBLY_COMPLETE);
+      EXPECT_EQ(written, source->size());
+      EXPECT_EQ(output, *source);
+    }
+  }
+}
+
+TEST(PyrowavePacketTest, OwnedSharedPacketKeepsExpandedBackingAndReusesCapacity) {
+  video::packet_t packet = std::make_unique<video::packet_raw_shared>(
+    std::make_shared<std::vector<std::uint8_t>>(std::initializer_list<std::uint8_t> { 1, 2, 3, 4, 5 }), 9, true);
+  auto *shared = dynamic_cast<video::packet_raw_shared *>(packet.get());
+  ASSERT_NE(shared, nullptr);
+  ASSERT_TRUE(shared->storage.unique());
+  shared->storage->reserve(32);
+  const auto *data = packet->data();
+  ASSERT_TRUE(pyrowave::insert_packet_headers_in_place(*shared->storage, 2, 3));
+  const std::vector<std::uint8_t> expected { 0, 0, 1, 2, 3, 0, 0, 4, 5 };
+  EXPECT_EQ(*shared->storage, expected);
+  EXPECT_EQ(packet->data(), data);
+  EXPECT_EQ(packet->data_size(), expected.size());
+  std::weak_ptr<std::vector<std::uint8_t>> weak = shared->storage;
+  packet.reset();
+  EXPECT_TRUE(weak.expired());
 }
 
 TEST(PyrowaveConfigTest, AcceptsStaticHlgTransfer) {
@@ -1014,6 +1400,32 @@ TEST(PyrowaveTransportTest, PublishesReplayWithoutMetadataFlags) {
   EXPECT_EQ(header.flags & LI_PYROWAVE_FLAG_METADATA_PRESENT, 0u);
 }
 
+TEST(PyrowaveTransportTest, PublishesOnlyValidPrefixAndRejectsOversizedPrefix) {
+  auto mail = std::make_shared<safe::mail_raw_t>();
+  auto packets = mail->queue<video::packet_t>("pyrowave-prefix-video");
+  auto source = std::make_shared<const std::vector<std::uint8_t>>(9000, 0x3c);
+  const auto published = platf::pyrowave_windows::publish_transport_frame(
+    2, source, 1312, 1500, packets, nullptr, std::nullopt, std::nullopt, nullptr, 17);
+  ASSERT_TRUE(published.success);
+  auto packet = packets->pop(std::chrono::milliseconds(0));
+  ASSERT_TRUE(packet);
+  auto *shared = dynamic_cast<video::packet_raw_shared *>(packet.get());
+  ASSERT_NE(shared, nullptr);
+  EXPECT_TRUE(shared->storage.unique());
+  const pyrowave::encoded_frame_t frame {
+    .frame_id = 2, .bitstream = { source }, .payload_size = 17,
+  };
+  const auto expected = pyrowave::make_transport_packetizer()->packetize(frame, {
+    .packet_boundary = 1376, .rtp_timestamp = 1500, .block_aware_fec = true,
+  });
+  ASSERT_EQ(expected.failure, pyrowave::failure_e::none);
+  EXPECT_EQ(*shared->storage, *expected.bitstream.storage);
+  const auto rejected = platf::pyrowave_windows::publish_transport_frame(
+    2, source, 1312, 1500, packets, nullptr, std::nullopt, std::nullopt, nullptr, source->size() + 1);
+  EXPECT_FALSE(rejected.success);
+  EXPECT_FALSE(packets->peek());
+}
+
 TEST(PyrowaveTransportTest, DoesNotQueueFailedPacketization) {
   auto mail = std::make_shared<safe::mail_raw_t>();
   auto packets = mail->queue<video::packet_t>("pyrowave-test-video");
@@ -1322,7 +1734,7 @@ TEST(PyrowavePacketizerTest, RejectsBoundariesThatCannotCarryWireHeaders) {
 TEST(PyrowavePacketTest, FailedPacketizationDoesNotExposePayload) {
   pyrowave::packetization_result_t result;
   result.failure = pyrowave::failure_e::packetization_failed;
-  result.bitstream.storage = std::make_shared<const std::vector<std::uint8_t>>(
+  result.bitstream.storage = std::make_shared<std::vector<std::uint8_t>>(
     std::initializer_list<std::uint8_t> { 1 });
 
   EXPECT_FALSE(pyrowave::validate(result));

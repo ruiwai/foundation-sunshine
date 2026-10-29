@@ -16,6 +16,14 @@ on:
       - master
   workflow_dispatch:
     inputs:
+      pyrowave_tests_only:
+        description: 'Focused PyroWave tests plus encoder compile check, no packaging'
+        type: boolean
+        default: false
+      pyrowave_link_host:
+        description: 'Optional Sunshine executable link during focused tests'
+        type: boolean
+        default: false
       gui_run_id:
         description: 'Optional successful Panel artifact run; its commit must match the Panel submodule'
         type: string
@@ -30,7 +38,9 @@ on:
           - 'OFF'
 
 concurrency:
-  group: '${{ github.workflow }}-${{ github.ref }}'
+  # Preserve async full-test evidence across later manual builds
+  # (focused or full) and branch runs by isolating manual run IDs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: true
 
 # The pinned LizardByte release action still composes a Node.js 20 action.
@@ -209,6 +219,7 @@ jobs:
           echo "  GCC: $(gcc --version | head -1)"
 
       - name: Setup Node.js
+        if: ${{ !inputs.pyrowave_tests_only }}
         uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
@@ -216,17 +227,20 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Setup .NET for DualSense sidecar
+        if: ${{ !inputs.pyrowave_tests_only }}
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
       - name: Build self-contained DualSense sidecar
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: pwsh
         env:
           RELEASE_TAG: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
         run: .\scripts\build-ds5-sidecar.ps1 -ReleaseTag $env:RELEASE_TAG
 
       - name: Build Web UI
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: pwsh
         run: |
           npm ci
@@ -243,9 +257,9 @@ jobs:
           path: ${{ github.workspace }}\.ccache
           # The key is unique per run; the prefix restore-key is what actually
           # produces the hits: every run seeds itself from the most recent
-          # previous one. Saving is split out below so that only master
-          # writes: PR-branch entries are invisible to other branches yet
-          # still consume the shared cache quota, and when that quota fills
+          # previous one. Only master and explicit manual builds of
+          # port/pyrowave-optimizations save, with identical keys scoped by ref.
+          # PR runs only restore to limit shared cache quota use. When full
           # (10 GB, LRU), eviction wiped the whole lineage once and forced a
           # full 47-minute cold rebuild.
           key: ccache-windows-${{ github.run_id }}
@@ -253,7 +267,7 @@ jobs:
             ccache-windows-
 
       - name: Fetch paired GUI artifact
-        if: github.event_name == 'workflow_dispatch' && inputs.gui_run_id != ''
+        if: github.event_name == 'workflow_dispatch' && !inputs.pyrowave_tests_only && inputs.gui_run_id != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -323,23 +337,50 @@ jobs:
       - name: Build Windows
         shell: msys2 {0}
         env:
+          PYROWAVE_TESTS_ONLY: ${{ inputs.pyrowave_tests_only || false }}
+          PYROWAVE_LINK_HOST: ${{ inputs.pyrowave_link_host || false }}
           CCACHE_DIR: ${{ github.workspace }}\.ccache
           CCACHE_MAXSIZE: 2G
           CCACHE_COMPILERCHECK: content
         run: |
-          ninja -C build
+          if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
+            ninja -C build pyrowave_unit_tests pyrowave_packetizer_probe \
+              CMakeFiles/sunshine.dir/src/config.cpp.obj \
+              CMakeFiles/sunshine.dir/src/video.cpp.obj \
+              CMakeFiles/sunshine.dir/src/rtsp.cpp.obj \
+              CMakeFiles/sunshine.dir/src/stream.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/gpu_encoder.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/cpu_encoder.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/pyrowave/transport.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/display_vdd_vram.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/display_base.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/display_vdd.cpp.obj \
+              CMakeFiles/sunshine.dir/src/platform/windows/display_vram.cpp.obj
+            if [[ "${PYROWAVE_LINK_HOST:-false}" == "true" ]]; then
+              ninja -C build sunshine
+            fi
+          else
+            ninja -C build
+          fi
           ccache --show-stats
 
       - name: Run native tests
         shell: msys2 {0}
-        run: ctest --test-dir build --output-on-failure
+        env:
+          PYROWAVE_TESTS_ONLY: ${{ inputs.pyrowave_tests_only || false }}
+        run: |
+          if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
+            ctest --test-dir build --verbose --output-on-failure --no-tests=error -R '^pyrowave_(unit_tests|packetizer_probe)$'
+          else
+            ctest --test-dir build --output-on-failure
+          fi
 
       - name: Save compiler cache
-        # Only master writes (always(): a failed or cancelled build still
-        # produced valid objects). PR runs restore master's entry, so they
-        # don't need to save, and skipping their saves keeps the shared
-        # cache quota flat.
-        if: always() && github.ref == 'refs/heads/master'
+        # Master and manual port/pyrowave-optimizations builds save even after
+        # failure or cancellation (always()): compiled objects remain valid.
+        # PR runs only restore; excluding their saves limits shared quota use.
+        # Each allowed ref retains its own warm lineage.
+        if: always() && (github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/port/pyrowave-optimizations'))
         id: ccache_save
         continue-on-error: true
         uses: actions/cache/save@v6
@@ -348,11 +389,11 @@ jobs:
           key: ccache-windows-${{ github.run_id }}
 
       - name: Prune stale compiler cache entries
-        # Collapse the cache to exactly one entry (the newest one saved).
-        # Entries pile up one-per-run otherwise; on a 10 GB repo quota that
-        # once got the entire lineage LRU-evicted. A single entry is also
-        # restored by every later run, which keeps resetting its 7-day
-        # inactivity clock, so neither eviction path can take it out.
+        # Keep one newest compiler cache per ref, for master and explicit
+        # port manual builds. Ref-scoped enumeration isolates their caches.
+        # Entries otherwise pile up one-per-run and can exhaust the repo quota;
+        # pruning reduces quota pressure without deleting another ref's cache.
+        # The newest entry remains available to later runs in the same scope.
         # Only entries from runs OLDER than this one are deleted (run ids
         # increase monotonically): a cancelled run still executes its
         # always() save and prune alongside the next run, and age-filtered
@@ -361,7 +402,7 @@ jobs:
         # Skipped unless the save step actually succeeded (outcome keeps the
         # real result under continue-on-error; the save subaction sets no
         # outputs, so conclusion can't tell success from failure).
-        if: always() && github.ref == 'refs/heads/master' && steps.ccache_save.outcome == 'success'
+        if: always() && (github.ref == 'refs/heads/master' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/port/pyrowave-optimizations')) && steps.ccache_save.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
@@ -371,7 +412,7 @@ jobs:
           # latter caps at --limit 100, and once this repo's other caches
           # (msys2, npm, ...) grow past that, stale ccache entries would
           # fall outside the window and never get pruned.
-          $stale = gh api --paginate "repos/$env:GITHUB_REPOSITORY/actions/caches?per_page=100" --jq '.actions_caches[] | select(.key | test("^ccache-windows-[0-9]+$")) | [(.key | sub("^ccache-windows-";"") | tonumber), .id, .key] | @tsv' |
+          $stale = gh api --method GET --paginate "repos/$env:GITHUB_REPOSITORY/actions/caches" -f per_page=100 -f "ref=$env:GITHUB_REF" --jq '.actions_caches[] | select(.key | test("^ccache-windows-[0-9]+$")) | [(.key | sub("^ccache-windows-";"") | tonumber), .id, .key] | @tsv' |
             Where-Object { $_ } |
             ForEach-Object {
               $parts = $_ -split "`t"
@@ -386,28 +427,38 @@ jobs:
           Write-Output "Pruned $(@($stale).Count) stale ccache entries; kept $current"
 
       - name: Cache Inno Setup
+        if: ${{ !inputs.pyrowave_tests_only }}
         id: inno-cache
         uses: actions/cache@v6
         with:
           path: C:\Program Files (x86)\Inno Setup 6
-          key: inno-setup-6
+          key: inno-setup-6.7.3
 
       - name: Install Inno Setup
-        if: steps.inno-cache.outputs.cache-hit != 'true'
+        if: ${{ !inputs.pyrowave_tests_only && steps.inno-cache.outputs.cache-hit != 'true' }}
         shell: pwsh
         run: |
-          # Download and install Inno Setup 6 (silent install)
-          $url = "https://jrsoftware.org/download.php/is.exe"
+          # Pin official Inno Setup 6.7.3 and verify SHA256 before silent install.
+          $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
           $installer = "$env:TEMP\innosetup.exe"
           Invoke-WebRequest -Uri $url -OutFile $installer
-          Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -Wait
+          $expectedHash = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+          if ((Get-FileHash -Path $installer -Algorithm SHA256).Hash -ne $expectedHash) {
+            throw 'Inno Setup installer SHA256 mismatch'
+          }
+          $process = Start-Process -FilePath $installer -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-' -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Inno Setup installer failed with exit code $($process.ExitCode)"
+          }
 
       - name: Add Inno Setup to PATH
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: pwsh
         run: |
           echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
 
       - name: Package Windows
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: msys2 {0}
         env:
           RTX_VIDEO_ADAPTER_BUILT: ${{ steps.configure_windows.outputs.rtx_hdr }}
@@ -488,6 +539,7 @@ jobs:
           cp ./ds5-sidecar-package.json ../artifacts/Sunshine.Ds5Sidecar.manifest.json
 
       - name: Rename release assets
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: msys2 {0}
         run: |
           # Format tag to vYEAR.DATE where DATE is zero-padded to 4 digits
@@ -519,12 +571,14 @@ jobs:
           done
 
       - name: Generate Checksums
+        if: ${{ !inputs.pyrowave_tests_only }}
         shell: pwsh
         run: |
           # Generate SHA256 checksums from the final release asset names.
           .\scripts\generate-checksums.ps1 -Path .\artifacts -Output "SHA256SUMS.txt"
 
       - name: Upload Artifacts
+        if: ${{ !inputs.pyrowave_tests_only }}
         uses: actions/upload-artifact@v7
         with:
           name: sunshine-windows-r${{ github.run_number }}
@@ -538,7 +592,7 @@ jobs:
           if-no-files-found: error
 
       - name: Create/Update GitHub Release
-        if: needs.setup_release.outputs.publish_release == 'true'
+        if: ${{ !inputs.pyrowave_tests_only && needs.setup_release.outputs.publish_release == 'true' }}
         uses: LizardByte/create-release-action@v2025.426.1549
         with:
           allowUpdates: true
@@ -548,3 +602,53 @@ jobs:
           prerelease: true
           tag: ${{ needs.setup_release.outputs.release_tag }}.杂鱼
           token: ${{ secrets.GH_BOT_TOKEN }}
+
+  release_manual_draft:
+    name: Manual installer draft release
+    needs: [setup_release, build_win, vdd_smoke]
+    if: github.event_name == 'workflow_dispatch' && !inputs.pyrowave_tests_only
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    env:
+      DRAFT_TAG: build-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+    steps:
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: sunshine-windows-r${{ github.run_number }}
+          path: artifacts/
+
+      - name: Check existing publication
+        id: publication
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              ...context.repo, per_page: 100,
+            });
+            const existing = releases.find(release => release.tag_name === process.env.DRAFT_TAG);
+            core.setOutput('locked', Boolean(existing));
+
+      - name: Create Release
+        if: steps.publication.outputs.locked != 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.DRAFT_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.setup_release.outputs.release_version }}
+          draft: true
+          prerelease: true
+          fail_on_unmatched_files: true
+          overwrite_files: false
+          body: |
+            Manual development artifacts for commit ${{ github.sha }}.
+            Build run/attempt: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}
+          files: |
+            artifacts/Sunshine.*.WindowsInstaller.exe
+            artifacts/Sunshine.*.Portable-x64.zip
+            artifacts/Sunshine.Ds5Sidecar.x64.zip
+            artifacts/Sunshine.Ds5Sidecar.manifest.json
+            artifacts/SHA256SUMS.txt
+            artifacts/checksums.json

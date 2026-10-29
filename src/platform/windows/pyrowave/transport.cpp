@@ -45,6 +45,7 @@ namespace platf::pyrowave_windows {
         std::chrono::steady_clock::now() - *frame_timestamp).count();
       const auto latency = static_cast<std::uint16_t>(std::clamp<std::int64_t>(
         (elapsed + 50) / 100, 0, std::numeric_limits<std::uint16_t>::max()));
+      metadata.reserve(10);
       append_u16(metadata, LI_PYROWAVE_METADATA_HOST_PROCESSING_LATENCY);
       append_u16(metadata, runtime_metadata_flags);
       append_u32(metadata, sizeof(latency));
@@ -63,9 +64,10 @@ namespace platf::pyrowave_windows {
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
     std::optional<platf::frame_pipeline_trace_t> pipeline_trace,
-    const pyrowave::hdr_frame_metadata_t *dynamic_metadata) noexcept {
+    const pyrowave::hdr_frame_metadata_t *dynamic_metadata,
+    std::size_t payload_size) noexcept {
     transport_publish_result_t result;
-    const auto input_bytes = bitstream ? bitstream->size() : 0u;
+    const auto input_bytes = payload_size != 0 ? payload_size : (bitstream ? bitstream->size() : 0u);
     const auto boundary_overflow = packet_boundary >
       std::numeric_limits<std::size_t>::max() - LI_PYROWAVE_WIRE_FEC_HEADER_SIZE;
     const auto boundary_invalid = packet_boundary == 0 ||
@@ -79,7 +81,7 @@ namespace platf::pyrowave_windows {
                         << ", rtp_timestamp=" << rtp_timestamp
                         << ", block_aware_fec=1";
     if (frame_number <= 0 || !bitstream || bitstream->empty() ||
-        boundary_overflow || boundary_invalid) {
+        payload_size > bitstream->size() || boundary_overflow || boundary_invalid) {
       BOOST_LOG(warning) << "[PyroWaveTransport] rejected frame before packetizer"
                          << ", frame=" << frame_number
                          << ", input_bytes=" << input_bytes
@@ -98,6 +100,7 @@ namespace platf::pyrowave_windows {
           std::chrono::milliseconds(100),
         },
         .bitstream = { std::move(bitstream) },
+        .payload_size = payload_size,
       };
       auto metadata = build_runtime_metadata(frame_timestamp);
       auto metadata_flags = static_cast<std::uint16_t>(metadata.empty() ? 0 : runtime_metadata_flags);
@@ -124,7 +127,8 @@ namespace platf::pyrowave_windows {
         metadata_flags = LI_PYROWAVE_METADATA_FLAG_PROTECTED |
           (frame_timestamp ? LI_PYROWAVE_METADATA_FLAG_RUNTIME : 0);
       }
-      auto packetized = pyrowave::make_transport_packetizer()->packetize(frame, {
+      thread_local auto packetizer = pyrowave::make_transport_packetizer();
+      auto packetized = packetizer->packetize(frame, {
         .packet_boundary = packet_boundary + LI_PYROWAVE_WIRE_FEC_HEADER_SIZE,
         .rtp_timestamp = rtp_timestamp,
         .block_aware_fec = true,
@@ -153,8 +157,8 @@ namespace platf::pyrowave_windows {
         return result;
       }
 
-      auto output = std::make_unique<video::packet_raw_generic>(
-        std::vector<std::uint8_t>(packetized.bitstream.view().begin(), packetized.bitstream.view().end()),
+      auto output = std::make_unique<video::packet_raw_shared>(
+        std::move(packetized.bitstream.storage),
         frame_number,
         true);
       output->channel_data = channel_data;

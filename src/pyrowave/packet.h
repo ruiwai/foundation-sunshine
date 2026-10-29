@@ -20,8 +20,13 @@ namespace pyrowave {
   [[nodiscard]] int
   limit_rtp_packet_size(int requested_packet_size, std::uint32_t max_wire_packet_size) noexcept;
 
-  struct bitstream_buffer_t {
-    using storage_t = std::shared_ptr<const std::vector<std::uint8_t>>;
+  // Invalid dimensions or resize failure leave bytes unchanged.
+  [[nodiscard]] bool
+  insert_packet_headers_in_place(std::vector<std::uint8_t> &bytes, std::size_t header_size, std::size_t payload_size) noexcept;
+
+  template<class Vector>
+  struct basic_bitstream_buffer_t {
+    using storage_t = std::shared_ptr<Vector>;
 
     storage_t storage {};
 
@@ -40,11 +45,14 @@ namespace pyrowave {
     }
   };
 
+  using bitstream_buffer_t = basic_bitstream_buffer_t<const std::vector<std::uint8_t>>;
+
   struct encoded_frame_t {
     frame_id_t frame_id = 0;
     frame_kind_e kind = frame_kind_e::intra;
     frame_deadline_t deadline {};
     bitstream_buffer_t bitstream {};
+    std::size_t payload_size = 0;  // Zero uses whole backing storage; otherwise a valid prefix.
   };
 
   struct packet_span_t {
@@ -64,8 +72,10 @@ namespace pyrowave {
 
   struct packetization_result_t {
     failure_e failure = failure_e::none;
-    bitstream_buffer_t bitstream {};
+    basic_bitstream_buffer_t<std::vector<std::uint8_t>> bitstream {};
     std::vector<packet_span_t> packets;
+
+    [[nodiscard]] std::vector<std::uint8_t> take_bytes();
   };
 
   [[nodiscard]] bool
