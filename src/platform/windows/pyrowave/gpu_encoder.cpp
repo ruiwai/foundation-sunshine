@@ -399,6 +399,7 @@ namespace platf::pyrowave_windows {
         if (!verify_fence_return(release_value)) {
           return encode_failure(frame_number, "vulkan-to-d3d11-fence-probe");
         }
+        if (!conversion_->release_source_after_encode(*slot)) return encode_failure(frame_number, "source-release");
         if (!ring_.finish_encode(*slot)) return encode_failure(frame_number, "plane-ring-release");
 
         const pyrowave::hdr_frame_metadata_t *dynamic_metadata = nullptr;

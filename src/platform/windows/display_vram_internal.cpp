@@ -4,12 +4,88 @@
  */
 #include "display_vram_internal.h"
 
+#include <chrono>
 #include <utility>
 
 #include "src/logging.h"
 
 namespace platf::dxgi {
   using namespace std::literals;
+
+  bool
+  wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms) {
+    if (!context || !query) return false;
+    device_t device;
+    context->GetDevice(&device);
+    if (!device || device->GetDeviceRemovedReason() != S_OK) return false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    context->Flush();
+    for (;;) {
+      BOOL complete = FALSE;
+      const auto status = context->GetData(query, &complete, sizeof(complete), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+      if (device->GetDeviceRemovedReason() != S_OK) return false;
+      if (status == S_OK) return complete == TRUE;
+      if (status != S_FALSE || std::chrono::steady_clock::now() >= deadline) return false;
+      Sleep(1);
+    }
+  }
+
+  bool
+  pending_pyrowave_source_t::hold(std::shared_ptr<img_d3d_t> image, IDXGIKeyedMutex *mutex) {
+    if (!image || !mutex || pending()) return false;
+    mutex->AddRef();
+    mutex_.reset(mutex);
+    image_ = std::move(image);
+    return true;
+  }
+
+  bool
+  pending_pyrowave_source_t::complete() {
+    if (!pending()) return true;
+    const bool released = image_->borrowed_vdd_frame ? image_->release_borrowed_vdd_after_convert(mutex_.get()) : mutex_->ReleaseSync(image_->encoder_release_key) == S_OK;
+    if (!released) return false;
+    image_.reset();
+    mutex_.reset();
+    return true;
+  }
+
+  bool
+  pending_pyrowave_sources_t::can_hold(std::size_t slot, const img_d3d_t *image, const IDXGIKeyedMutex *mutex) const noexcept {
+    if (slot >= size || !image || !mutex || sources_[slot].pending()) return false;
+    for (const auto &source : sources_) {
+      if (source.owns(image, mutex)) return false;
+    }
+    return true;
+  }
+
+  bool
+  pending_pyrowave_sources_t::hold(std::size_t slot, std::shared_ptr<img_d3d_t> image, IDXGIKeyedMutex *mutex) {
+    return can_hold(slot, image.get(), mutex) && sources_[slot].hold(std::move(image), mutex);
+  }
+
+  bool
+  pending_pyrowave_sources_t::complete(std::size_t slot) {
+    return slot < size && sources_[slot].complete();
+  }
+
+  bool
+  pending_pyrowave_sources_t::pending(std::size_t slot) const noexcept {
+    return slot >= size || sources_[slot].pending();
+  }
+
+  bool
+  is_pyrowave_source_valid(const img_d3d_t &img, const D3D11_TEXTURE2D_DESC &desc,
+    std::uint64_t adapter_luid, std::uint64_t generation, UINT width, UINT height) noexcept {
+    const auto &frame = img.frame_desc;
+    return !img.blank && !img.dummy && img.encoder_texture_handle && !img.linear_gamma &&
+           width > 0 && height > 0 && (width & 1u) == 0 && (height & 1u) == 0 &&
+           (!adapter_luid || !frame.adapter_luid || frame.adapter_luid == adapter_luid) &&
+           (!generation || !frame.source_generation || frame.source_generation == generation) &&
+           frame.encoding == pixel_encoding_class_e::unorm8 && frame.domain == frame_domain_e::sdr_rec709 &&
+           desc.Width == width && desc.Height == height && desc.SampleDesc.Count == 1 &&
+           desc.ArraySize == 1 && desc.MipLevels == 1 &&
+           (desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM);
+  }
 
   void
   img_d3d_t::note_borrowed_vdd_frame_returned() {
@@ -44,7 +120,7 @@ namespace platf::dxgi {
     }
 
     HRESULT status = encoder_mutex->ReleaseSync(producer_release_key);
-    if (FAILED(status)) {
+    if (status != S_OK) {
       BOOST_LOG(warning) << "[vdd] failed to return borrowed slot "sv
                          << borrowed_vdd_slot << " after convert [0x"sv
                          << util::hex(status).to_string_view() << ']';

@@ -12,6 +12,10 @@
 #include "display.h"
 
 namespace platf::dxgi {
+  // The event must already have been recorded after the discarded dispatch.
+  bool
+  wait_for_gpu_completion(ID3D11DeviceContext *context, ID3D11Query *query, DWORD timeout_ms);
+
   struct shared_yuv_plane_t {
     HANDLE shared_handle = nullptr;
     std::uint32_t width = 0;
@@ -31,6 +35,8 @@ namespace platf::dxgi {
     virtual ID3D11DeviceContext *d3d_context() noexcept = 0;
     virtual const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept = 0;
     virtual bool select_plane_slot(std::size_t slot) noexcept = 0;
+    virtual bool
+    release_source_after_encode(std::size_t slot) = 0;
     // Poll without blocking and retain the latest completed scene sample.
     virtual bool collect_hdr_luminance_stats() = 0;
   };
@@ -80,6 +86,61 @@ namespace platf::dxgi {
 
     ~img_d3d_t() override;
   };
+
+  // Caller owns the mutex before hold(), and proves completion before complete().
+  // Destruction drops references only: never explicitly unlock unproven work.
+  class pending_pyrowave_source_t {
+  public:
+    pending_pyrowave_source_t() = default;
+    pending_pyrowave_source_t(const pending_pyrowave_source_t &) = delete;
+    pending_pyrowave_source_t &
+    operator=(const pending_pyrowave_source_t &) = delete;
+    pending_pyrowave_source_t(pending_pyrowave_source_t &&) = delete;
+    pending_pyrowave_source_t &
+    operator=(pending_pyrowave_source_t &&) = delete;
+    bool
+    hold(std::shared_ptr<img_d3d_t> image, IDXGIKeyedMutex *mutex);
+    bool
+    complete();
+    bool
+    pending() const noexcept { return static_cast<bool>(image_); }
+    bool
+    owns(const img_d3d_t *image, const IDXGIKeyedMutex *mutex) const noexcept {
+      return (image && image_.get() == image) || (mutex && mutex_.get() == mutex);
+    }
+
+  private:
+    std::shared_ptr<img_d3d_t> image_;
+    keyed_mutex_t mutex_;
+  };
+
+  // Single-thread only; duplicate checks cover exact objects, not COM aliases.
+  class pending_pyrowave_sources_t {
+  public:
+    static constexpr std::size_t size = 2;
+    pending_pyrowave_sources_t() = default;
+    pending_pyrowave_sources_t(const pending_pyrowave_sources_t &) = delete;
+    pending_pyrowave_sources_t &
+    operator=(const pending_pyrowave_sources_t &) = delete;
+    pending_pyrowave_sources_t(pending_pyrowave_sources_t &&) = delete;
+    pending_pyrowave_sources_t &
+    operator=(pending_pyrowave_sources_t &&) = delete;
+    bool
+    can_hold(std::size_t slot, const img_d3d_t *image, const IDXGIKeyedMutex *mutex) const noexcept;
+    bool
+    hold(std::size_t slot, std::shared_ptr<img_d3d_t> image, IDXGIKeyedMutex *mutex);
+    bool
+    complete(std::size_t slot);
+    bool
+    pending(std::size_t slot) const noexcept;
+
+  private:
+    std::array<pending_pyrowave_source_t, size> sources_;
+  };
+
+  bool
+  is_pyrowave_source_valid(const img_d3d_t &img, const D3D11_TEXTURE2D_DESC &desc,
+    std::uint64_t adapter_luid, std::uint64_t generation, UINT width, UINT height) noexcept;
 
   /**
    * Scoped key-0 lock used while the capture device writes an image.

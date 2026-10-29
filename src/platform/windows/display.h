@@ -311,6 +311,16 @@ namespace platf::dxgi {
     virtual std::vector<DXGI_FORMAT>
     get_supported_capture_formats() = 0;
 
+    std::uint64_t
+    capture_adapter_id() const noexcept {
+      return capture_adapter_luid;
+    }
+
+    std::uint64_t
+    capture_generation_id() const noexcept {
+      return capture_source_generation;
+    }
+
   private:
     std::wstring display_device_name;
 
