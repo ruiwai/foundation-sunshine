@@ -29,6 +29,8 @@ extern "C" {
 
 // lib includes
 #include "cbs.h"
+#include "capture_control.h"
+#include "cursor_channel.h"
 #include "config.h"
 #include "streaming/perf_recorder.h"
 #include "display_device/display_device.h"
@@ -39,6 +41,7 @@ extern "C" {
 #include "nvenc/nvenc_encoder.h"
 #include "amf/amf_encoder.h"
 #include "platform/common.h"
+#include "pyrowave/capture_lifecycle.h"
 #include "pyrowave/capture_policy.h"
 #include "sync.h"
 #include "video.h"
@@ -1156,6 +1159,7 @@ namespace video {
   struct capture_ctx_t {
     captured_frame_event_t images;
     config_t config;
+    std::shared_ptr<safe::event_t<std::string>> active_display;
   };
 
   struct capture_thread_async_ctx_t {
@@ -1835,7 +1839,7 @@ namespace video {
       }
     });
 
-    auto switch_display_event = mail::man->event<int>(mail::switch_display);
+    auto seen_switch = capture_control::display_switch.generation();
     auto active_display_event = mail::man->event<std::string>(mail::active_display);
 
     // Wait for the initial capture context or a request to stop the queue
@@ -1844,6 +1848,14 @@ namespace video {
       return;
     }
     capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
+
+    const bool private_capture = capture_ctxs.front().config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT);
+    auto capture_memory_type = encoder.platform_formats->dev_type;
+#ifdef _WIN32
+    if (capture_ctxs.front().config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT)) {
+      capture_memory_type = platf::mem_type_e::dxgi;
+    }
+#endif
 
     auto reset_capture_display = [&](std::shared_ptr<platf::display_t> &display,
                                      const std::string &name, const config_t &client_config) {
@@ -1856,7 +1868,7 @@ namespace video {
       if (system_capture) {
         capture_config.capture_backend_override = "ddx";
       }
-      reset_display(display, system_capture ? platf::mem_type_e::system : encoder.platform_formats->dev_type,
+      reset_display(display, system_capture ? platf::mem_type_e::system : capture_memory_type,
         name, capture_config);
 #ifdef _WIN32
       if (!display && !system_capture &&
@@ -1879,7 +1891,7 @@ namespace video {
     // get the most up-to-date list available monitors
     std::vector<std::string> display_names;
     int display_p = -1;
-    refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+    refresh_displays(capture_memory_type, display_names, display_p);
 
     // Use client-specified display_name if provided, otherwise use the selected display
     std::string target_display_name;
@@ -1918,7 +1930,13 @@ namespace video {
     if (!disp) {
       return;
     }
-    active_display_event->raise(target_display_name);
+    auto publish_active_display = [&]() {
+      for (auto &ctx : capture_ctxs) {
+        if (ctx.active_display) ctx.active_display->raise(target_display_name);
+      }
+      if (!private_capture) active_display_event->raise(target_display_name);
+    };
+    publish_active_display();
     display_wp = disp;
 
     constexpr auto capture_buffer_size = 12;
@@ -1935,6 +1953,7 @@ namespace video {
         // 同一个捕获线程中的会话共享当前显示器。手动切换显示器后加入的会话
         // 必须继承当前目标，避免后续重新初始化跳回它启动时选择的显示器。
         capture_ctx->config.display_name = target_display_name;
+        if (capture_ctx->active_display) capture_ctx->active_display->raise(target_display_name);
         if (initial_img) {
           // 锁屏或静态桌面可能长时间没有新的 Desktop Duplication 帧。
           // 新会话必须先取得当前画面，不能一直编码初始化用的黑色占位帧。
@@ -2088,7 +2107,7 @@ namespace video {
           }
         }
 
-        if (switch_display_event->peek()) {
+        if (capture_control::display_switch.pending(seen_switch)) {
           artificial_reinit = true;
           return false;
         }
@@ -2118,6 +2137,9 @@ namespace video {
           // Wait for the other shared_ptr's of display to be destroyed.
           // New displays will only be created in this thread.
           while (display_wp->use_count() != 1) {
+            if (!capture_ctx_queue->running()) {
+              return;
+            }
             // Free images that weren't consumed by the encoders. These can reference the display and prevent
             // the ref count from reaching 1. We do this here rather than on the encoder thread to avoid race
             // conditions where the encoding loop might free a good frame after reinitializing if we capture
@@ -2128,8 +2150,7 @@ namespace video {
                 continue;
               }
 
-              while (capture_ctx->images->peek()) {
-                capture_ctx->images->pop();
+              while (capture_ctx->images->pop(0ms)) {
               }
 
               ++capture_ctx;
@@ -2150,12 +2171,12 @@ namespace video {
             disp.reset();
 
             // Refresh display names since a display removal might have caused the reinitialization
-            refresh_displays(encoder.platform_formats->dev_type, display_names, display_p);
+            refresh_displays(capture_memory_type, display_names, display_p);
 
             // Process any pending display switch with the new list of displays
             bool user_switched = false;
-            if (switch_display_event->peek()) {
-              display_p = std::clamp(*switch_display_event->pop(), 0, (int) display_names.size() - 1);
+            if (auto index = capture_control::display_switch.poll(seen_switch)) {
+              display_p = std::clamp(*index, 0, (int) display_names.size() - 1);
               user_switched = true;
             }
 
@@ -2193,7 +2214,7 @@ namespace video {
             // reset_display() will sleep between retries
             reset_capture_display(disp, target_display_name, config);
             if (disp) {
-              active_display_event->raise(target_display_name);
+              publish_active_display();
               break;
             }
           }
@@ -3998,12 +4019,12 @@ namespace video {
     std::vector<std::unique_ptr<sync_session_ctx_t>> &synced_session_ctxs,
     encode_session_ctx_queue_t &encode_session_ctx_queue,
     std::vector<std::string> &display_names,
-    int &display_p) {
+    int &display_p,
+    std::uint64_t &seen_switch) {
     const auto &encoder = *chosen_encoder;
 
     std::shared_ptr<platf::display_t> disp;
 
-    auto switch_display_event = mail::man->event<int>(mail::switch_display);
     auto active_display_event = mail::man->event<std::string>(mail::active_display);
     std::string active_display_name;
 
@@ -4022,8 +4043,8 @@ namespace video {
 
       // Process any pending display switch with the new list of displays
       bool user_switched = false;
-      if (switch_display_event->peek()) {
-        display_p = std::clamp(*switch_display_event->pop(), 0, (int) display_names.size() - 1);
+      if (auto index = capture_control::display_switch.poll(seen_switch)) {
+        display_p = std::clamp(*index, 0, (int) display_names.size() - 1);
         user_switched = true;
       }
 
@@ -4176,7 +4197,7 @@ namespace video {
           ++pos;
         })
 
-        if (switch_display_event->peek()) {
+        if (capture_control::display_switch.pending(seen_switch)) {
           ec = platf::capture_e::reinit;
           return false;
         }
@@ -4207,6 +4228,7 @@ namespace video {
 
   void
   captureThreadSync() {
+    auto seen_switch = capture_control::display_switch.generation();
     auto ref = capture_thread_sync.ref();
 
     std::vector<std::unique_ptr<sync_session_ctx_t>> synced_session_ctxs;
@@ -4231,7 +4253,7 @@ namespace video {
 
     std::vector<std::string> display_names;
     int display_p = -1;
-    while (encode_run_sync(synced_session_ctxs, ctx, display_names, display_p) == encode_e::reinit) {}
+    while (encode_run_sync(synced_session_ctxs, ctx, display_names, display_p, seen_switch) == encode_e::reinit) {}
   }
 
   void
@@ -4249,9 +4271,25 @@ namespace video {
       shutdown_event->raise(true);
     });
 
-    auto ref = capture_thread_async.ref();
-    if (!ref) {
-      return;
+    const bool is_pyrowave = config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT);
+    capture_thread_async_ctx_t private_ctx {};
+    decltype(capture_thread_async.ref()) shared_ref;
+    capture_thread_async_ctx_t *ref = nullptr;
+    if (is_pyrowave) {
+      private_ctx.encoder_p = chosen_encoder;
+      if (!private_ctx.encoder_p) {
+        BOOST_LOG(error) << "PyroWave capture requires a selected encoder descriptor"sv;
+        return;
+      }
+      private_ctx.capture_ctx_queue = std::make_shared<safe::queue_t<capture_ctx_t>>(1);
+      ref = &private_ctx;
+    }
+    else {
+      shared_ref = capture_thread_async.ref();
+      if (!shared_ref) {
+        return;
+      }
+      ref = shared_ref.get();
     }
 
     const bool accepts_system_capture = ref->encoder_p->platform_formats->dev_type == platf::mem_type_e::system ||
@@ -4270,10 +4308,43 @@ namespace video {
       ref->capture_policy->detach();
     });
 
-    ref->capture_ctx_queue->raise(capture_ctx_t { images, config });
+    ref->capture_ctx_queue->raise(capture_ctx_t { images, config, mail->event<std::string>(mail::active_display) });
 
     if (!ref->capture_ctx_queue->running()) {
       return;
+    }
+
+    // Join before detaching policy admission; context and shared_ref outlive both.
+    std::optional<pyrowave::capture_worker<std::function<void()>>> private_worker;
+    if (is_pyrowave) {
+      try {
+        private_worker.emplace(
+          [&, images]() noexcept {
+            images->stop();
+            private_ctx.capture_ctx_queue->stop();
+          },
+          [&, images]() { return images->running() && private_ctx.capture_ctx_queue->running(); },
+          [&]() {
+            cursor_channel::producer_scope cursor_producer(config.perf_session_id);
+            captureThread(private_ctx.capture_ctx_queue, private_ctx.display_wp, private_ctx.reinit_event,
+              private_ctx.force_system_capture, private_ctx.capture_policy, *private_ctx.encoder_p);
+          },
+          [](std::exception_ptr failure) {
+            try {
+              std::rethrow_exception(failure);
+            } catch (const std::exception &e) {
+              BOOST_LOG(error) << "Capture worker failed: " << e.what();
+            } catch (...) {
+              BOOST_LOG(error) << "Capture worker failed: unknown exception";
+            }
+          });
+      } catch (...) {
+        private_ctx.capture_ctx_queue->stop();
+        try {
+          BOOST_LOG(error) << "Could not start private capture worker"sv;
+        } catch (...) {}
+        return;
+      }
     }
 
     int frame_nr = 1;
@@ -4288,7 +4359,6 @@ namespace video {
 
     // Cache window capture mode check outside the loop
     const bool is_window_capture = (config::video.capture_target == "window");
-    const bool is_pyrowave = config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT);
 #ifdef _WIN32
     bool pyrowave_gpu_disabled = false;
     bool pyrowave_session_is_gpu = false;
@@ -4319,7 +4389,7 @@ namespace video {
         auto lg = ref->display_wp.lock();
         if (ref->display_wp->expired()) {
           BOOST_LOG(verbose) << "[Display] Display object expired, waiting for reinit...";
-          // std::this_thread::sleep_for(20ms);
+          if (is_pyrowave) std::this_thread::sleep_for(20ms);
           continue;
         }
         display = ref->display_wp->lock();
@@ -4648,7 +4718,7 @@ namespace video {
     int packet_size) {
 #ifdef _WIN32
     if (config.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT)) {
-      // PyroWave uses the same shared capture coordinator and encoder-loop
+      // PyroWave uses the same capture algorithm with a private owner and encoder-loop
       // pacing as the legacy backends. Its session factory is selected inside
       // capture_async, so display reinit and system-memory fallback remain
       // owned by the capture thread.

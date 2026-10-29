@@ -38,6 +38,19 @@ target_link_libraries(display_scale_steps_unit_tests PRIVATE gtest_main sunshine
 set_target_properties(display_scale_steps_unit_tests PROPERTIES CXX_STANDARD 23)
 add_test(NAME display_scale_steps_unit_tests COMMAND display_scale_steps_unit_tests)
 
+find_package(Threads REQUIRED)
+add_executable(capture_control_unit_tests ${CMAKE_SOURCE_DIR}/tests/unit/test_capture_control.cpp)
+add_executable(cursor_channel_unit_tests
+        ${CMAKE_SOURCE_DIR}/src/cursor_channel.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/test_cursor_channel.cpp)
+foreach (routing_target capture_control_unit_tests cursor_channel_unit_tests)
+    target_include_directories(${routing_target} PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_link_libraries(${routing_target} PRIVATE gtest_main Threads::Threads
+            sunshine_project_options sunshine_coverage)
+    set_target_properties(${routing_target} PROPERTIES CXX_STANDARD 23)
+    add_test(NAME ${routing_target} COMMAND ${routing_target})
+endforeach ()
+
 add_executable(pen_barrel_roll_unit_tests ${CMAKE_SOURCE_DIR}/tests/unit/test_pen_barrel_roll.cpp)
 target_include_directories(pen_barrel_roll_unit_tests PRIVATE "${CMAKE_SOURCE_DIR}/third-party")
 target_link_libraries(pen_barrel_roll_unit_tests PRIVATE gtest_main
@@ -535,6 +548,8 @@ list(FILTER TEST_SOURCES EXCLUDE REGEX "/tests/tools/")
 # These files already run in registered standalone suites. Keep one copy of
 # their assertions and isolate their fixtures from the aggregate host state.
 list(REMOVE_ITEM TEST_SOURCES
+        ${CMAKE_SOURCE_DIR}/tests/unit/test_capture_control.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/test_cursor_channel.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/test_ai_provider.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/test_client_fingerprint.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/test_config_overrides.cpp

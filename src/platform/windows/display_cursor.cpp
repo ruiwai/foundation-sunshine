@@ -351,7 +351,7 @@ namespace platf::dxgi {
 
   bool
   local_cursor_mode_active() {
-    return cursor_channel::local_mode_active();
+    return cursor_channel::producer_local_mode_active();
   }
 
   bool

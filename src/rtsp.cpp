@@ -1215,7 +1215,7 @@ namespace rtsp_stream {
       if (config::input.clipboard_sync && clipboard_bridge::bridge_t::instance().gui_alive()) {
         caps |= platf::platform_caps::clipboard_text | platf::platform_caps::clipboard_image;
       }
-      if (cursor_channel::producer_available()) {
+      if (cursor_channel::producer_available(session.id)) {
         caps |= platf::platform_caps::cursor_shape;
       }
       if (text_context::bridge_t::instance().gui_alive()) {

@@ -8,6 +8,25 @@
 #include <vector>
 
 namespace cursor_channel {
+  // Admit a nonzero launch ID before exposing control. The private binding
+  // outlives producer scopes; only remove_session releases it.
+  void
+  register_private_session(std::uint32_t session_id);
+
+  class producer_scope {
+  public:
+    explicit producer_scope(std::uint32_t session_id);
+    ~producer_scope();
+    producer_scope(const producer_scope &) = delete;
+    producer_scope &operator=(const producer_scope &) = delete;
+    producer_scope(producer_scope &&) = delete;
+    producer_scope &operator=(producer_scope &&) = delete;
+
+  private:
+    std::uint32_t owner_;
+    std::uint32_t previous_owner_;
+  };
+
   struct snapshot_t {
     std::uint64_t revision = 0;
     bool valid = false;
@@ -30,11 +49,14 @@ namespace cursor_channel {
   bool
   local_mode_active();
 
+  bool
+  producer_local_mode_active();
+
   void
   set_producer_available(bool available);
 
   bool
-  producer_available();
+  producer_available(std::uint32_t session_id = 0);
 
   void
   publish_visibility(bool visible, std::uint32_t shape_id);
@@ -49,5 +71,5 @@ namespace cursor_channel {
                 std::vector<std::uint8_t> bgra);
 
   bool
-  copy_latest(std::uint64_t known_revision, snapshot_t &out);
+  copy_latest(std::uint64_t known_revision, snapshot_t &out, std::uint32_t session_id = 0);
 }  // namespace cursor_channel

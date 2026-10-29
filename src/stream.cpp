@@ -1971,12 +1971,16 @@ namespace stream {
       temp_launch_session.hdr_target_source = session->hdr_target_source;
 
       bool active_display_resolved = true;
-      const auto active_display_event = mail::man->event<std::string>(mail::active_display);
-      const auto active_display = active_display_event->view(std::chrono::milliseconds {0});
+      const bool private_capture = session->config.monitor.videoFormat == static_cast<int>(LI_PYROWAVE_VIDEO_FORMAT);
+      auto active_display = session->mail->event<std::string>(mail::active_display)->view(std::chrono::milliseconds {0});
+      if (!active_display && !private_capture) {
+        active_display = mail::man->event<std::string>(mail::active_display)->view(std::chrono::milliseconds {0});
+      }
       const bool has_active_display = active_display && !active_display->empty();
       const std::string target_display = has_active_display ?
                                            *active_display :
                                            session->config.monitor.display_name;
+      if (private_capture && target_display.empty()) active_display_resolved = false;
       if (!target_display.empty()) {
         const auto devices = display_device::enum_available_devices();
         const auto device_it = std::find_if(devices.begin(), devices.end(), [&](const auto &entry) {
@@ -2244,7 +2248,7 @@ namespace stream {
         BOOST_LOG(warning) << "Ignoring local cursor mode on an unencrypted control stream"sv;
         return;
       }
-      if (enable && !cursor_channel::producer_available()) {
+      if (enable && !cursor_channel::producer_available(session->launch_session_id)) {
         BOOST_LOG(warning) << "Ignoring local cursor mode without an active cursor producer"sv;
         return;
       }
@@ -2450,7 +2454,7 @@ namespace stream {
 
             if (session->control.local_cursor_mode) {
               cursor_channel::snapshot_t cursor;
-              if (cursor_channel::copy_latest(session->control.cursor_revision, cursor)) {
+              if (cursor_channel::copy_latest(session->control.cursor_revision, cursor, session->launch_session_id)) {
                 const bool include_shape =
                   cursor.has_shape &&
                   (!session->control.cursor_shape_sent ||
@@ -4408,6 +4412,13 @@ namespace stream {
         BOOST_LOG(debug) << "Expecting incoming session connections from "sv << addr_string;
       }
 
+      const bool private_cursor = !session.control_only &&
+        session.config.monitor.videoFormat == LI_PYROWAVE_VIDEO_FORMAT;
+      if (private_cursor) cursor_channel::register_private_session(session.launch_session_id);
+      auto cursor_registration_guard = util::fail_guard([&]() {
+        if (private_cursor) cursor_channel::remove_session(session.launch_session_id);
+      });
+
       // Register with the text-context bridge before publishing the session:
       // once the pointer is in the shared list the control thread may dispatch
       // input immediately, and an unregistered launch ID would silently drop
@@ -4503,6 +4514,7 @@ namespace stream {
       // 仅在 join() 依赖的状态全部提交后发布 RUNNING，
       // 会话线程和停止请求都会等待该边界。
       session.lifecycle.set_state(state_e::RUNNING);
+      cursor_registration_guard.disable();
       starting_guard.disable();
 
       return 0;

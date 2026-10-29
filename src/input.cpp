@@ -19,6 +19,7 @@ extern "C" {
 #include <unordered_map>
 
 #include "config.h"
+#include "capture_control.h"
 #include "globals.h"
 #include "input.h"
 #include "text_context/bridge.h"
@@ -324,7 +325,7 @@ namespace input {
     BOOST_LOG(debug) << "Apply Shortcut: 0x"sv << util::hex((std::uint8_t) keyCode).to_string_view();
 
     if (keyCode >= SUNSHINE_VK_F1 && keyCode <= SUNSHINE_VK_F13) {
-      mail::man->event<int>(mail::switch_display)->raise(keyCode - SUNSHINE_VK_F1);
+      capture_control::display_switch.request(keyCode - SUNSHINE_VK_F1);
       return 1;
     }
 

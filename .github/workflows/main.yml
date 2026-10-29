@@ -345,6 +345,7 @@ jobs:
         run: |
           if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
             ninja -C build pyrowave_unit_tests pyrowave_packetizer_probe \
+              capture_control_unit_tests cursor_channel_unit_tests \
               CMakeFiles/sunshine.dir/src/config.cpp.obj \
               CMakeFiles/sunshine.dir/src/video.cpp.obj \
               CMakeFiles/sunshine.dir/src/rtsp.cpp.obj \
@@ -370,7 +371,7 @@ jobs:
           PYROWAVE_TESTS_ONLY: ${{ inputs.pyrowave_tests_only || false }}
         run: |
           if [[ "${PYROWAVE_TESTS_ONLY:-false}" == "true" ]]; then
-            ctest --test-dir build --verbose --output-on-failure --no-tests=error -R '^pyrowave_(unit_tests|packetizer_probe)$'
+            ctest --test-dir build --verbose --output-on-failure --no-tests=error -R '^(pyrowave_(unit_tests|packetizer_probe)|(capture_control|cursor_channel)_unit_tests)$'
           else
             ctest --test-dir build --output-on-failure
           fi
