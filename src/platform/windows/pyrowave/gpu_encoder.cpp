@@ -410,6 +410,10 @@ namespace platf::pyrowave_windows {
         const pyrowave_rate_control rate_control {
           .maximum_bitstream_size = frame_budget,
         };
+        const auto allowance_result = pyrowave_encoder_set_fine_prequantization_allowed(
+          encoder_.get(), conversion_->is_vdd_direct_frame(*slot) ? VK_TRUE : VK_FALSE);
+        if (allowance_result != PYROWAVE_SUCCESS)
+          return encode_failure(frame_number, "pyrowave-prequant-allowance", static_cast<int>(allowance_result));
         const auto encode_result = pyrowave_encoder_encode_gpu(
           encoder_.get(), &acquire, &release, &buffers_[*slot], &rate_control);
         if (encode_result != PYROWAVE_SUCCESS) {

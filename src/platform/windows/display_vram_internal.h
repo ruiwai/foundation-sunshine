@@ -37,6 +37,8 @@ namespace platf::dxgi {
     virtual ID3D11Device *d3d_device() noexcept = 0;
     virtual ID3D11DeviceContext *d3d_context() noexcept = 0;
     virtual const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept = 0;
+    // Only successful direct borrowed-VDD conversions may opt in; fail closed otherwise.
+    virtual bool is_vdd_direct_frame(std::size_t) const noexcept { return false; }
     virtual bool select_plane_slot(std::size_t slot) noexcept = 0;
     virtual bool
     release_source_after_encode(std::size_t slot) = 0;

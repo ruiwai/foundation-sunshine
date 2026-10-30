@@ -3233,6 +3233,7 @@ namespace platf::dxgi {
 
     int
     convert(platf::img_t &image) override {
+      vdd_direct_frames_[active_slot_] = false;
       if (!base_.drain_discarded_sources()) return -1;
       base_.apply_nr_request();
       auto &img = static_cast<img_d3d_t &>(image);
@@ -3261,6 +3262,7 @@ namespace platf::dxgi {
             const auto result = base_.convert_direct(active_slot_, img, fused_shader_.get(), range_cb_.get(),
               { plane_uavs_[active_slot_][0].get(), plane_uavs_[active_slot_][1].get(), plane_uavs_[active_slot_][2].get() },
               plane.width, plane.height);
+            vdd_direct_frames_[active_slot_] = result == 0 && img.borrowed_vdd_texture && img.borrowed_vdd_frame;
             if (result == 0) last_slot_ = active_slot_;
             return result; // Never fall back after submission or an acquire failure.
           }
@@ -3299,6 +3301,9 @@ namespace platf::dxgi {
     const std::array<shared_yuv_plane_t, 3> *yuv_planes(std::size_t slot) const noexcept override {
       return slot < planes_.size() ? &planes_[slot] : nullptr;
     }
+    bool is_vdd_direct_frame(std::size_t slot) const noexcept override {
+      return slot < vdd_direct_frames_.size() && vdd_direct_frames_[slot];
+    }
     bool select_plane_slot(std::size_t slot) noexcept override {
       if (slot >= planes_.size()) return false;
       active_slot_ = slot;
@@ -3324,6 +3329,7 @@ namespace platf::dxgi {
     std::array<std::array<shader_res_t, 3>, pyrowave::plane_ring_t::size> plane_srvs_;
     std::array<std::array<uav_t, 3>, pyrowave::plane_ring_t::size> plane_uavs_;
     std::array<std::array<shared_yuv_plane_t, 3>, pyrowave::plane_ring_t::size> planes_;
+    std::array<bool, pyrowave::plane_ring_t::size> vdd_direct_frames_ {};
     std::size_t active_slot_ = 0;
     std::size_t last_slot_ = pyrowave::plane_ring_t::size;
   };
