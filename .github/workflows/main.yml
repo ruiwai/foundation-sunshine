@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - master
+      - perf/vdd-aggressive-quant
   workflow_dispatch:
     inputs:
       pyrowave_tests_only:
@@ -67,14 +68,14 @@ jobs:
 
       - name: Setup Release (Auto)
         id: setup_release_auto
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/perf/vdd-aggressive-quant'
         uses: LizardByte/setup-release-action@v2025.426.225
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Release (Manual)
         id: setup_release_manual
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/perf/vdd-aggressive-quant'
         run: |
           SUFFIX=$([ "${{ github.ref_name }}" = "master" ] && echo "" || echo "-dev")
           echo "publish_release=false" >> $GITHUB_OUTPUT
